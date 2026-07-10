@@ -1,8 +1,26 @@
-__pycache__/
-*.pyc
-.pytest_cache/
+# Python / library dependencies (do not commit installed packages)
 .venv/
 venv/
+env/
+ENV/
+.env/
+*.egg-info/
+.eggs/
+dist/
+build/
+wheels/
+pip-wheel-metadata/
+*.egg
+requirements.lock.txt
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Data / outputs (generated)
 data/raw/
@@ -25,4 +43,3 @@ reports/predictions/
 !logs/.gitkeep
 !reports/.gitkeep
 !reports/predictions/.gitkeep
-
