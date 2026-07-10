@@ -1,0 +1,72 @@
+[
+  {
+    "feature_a": "Flow Duration",
+    "feature_b": "Fwd IAT Total",
+    "correlation": 0.9985351472270378
+  },
+  {
+    "feature_a": "Fwd IAT Max",
+    "feature_b": "Flow IAT Max",
+    "correlation": 0.9980585275476194
+  },
+  {
+    "feature_a": "Fwd IAT Max",
+    "feature_b": "Idle Max",
+    "correlation": 0.9886656163600378
+  },
+  {
+    "feature_a": "Fwd IAT Max",
+    "feature_b": "Idle Mean",
+    "correlation": 0.9782871198811924
+  },
+  {
+    "feature_a": "Flow IAT Max",
+    "feature_b": "Idle Max",
+    "correlation": 0.9895124815091595
+  },
+  {
+    "feature_a": "Flow IAT Max",
+    "feature_b": "Idle Mean",
+    "correlation": 0.9799067666828906
+  },
+  {
+    "feature_a": "Flow IAT Max",
+    "feature_b": "Idle Min",
+    "correlation": 0.9513588733838746
+  },
+  {
+    "feature_a": "Idle Max",
+    "feature_b": "Idle Mean",
+    "correlation": 0.9902654779360783
+  },
+  {
+    "feature_a": "Idle Max",
+    "feature_b": "Idle Min",
+    "correlation": 0.9613580626466681
+  },
+  {
+    "feature_a": "Idle Mean",
+    "feature_b": "Idle Min",
+    "correlation": 0.9901052370390715
+  },
+  {
+    "feature_a": "Fwd Header Length.1",
+    "feature_b": "Fwd Header Length",
+    "correlation": 1.0
+  },
+  {
+    "feature_a": "Total Length of Bwd Packets",
+    "feature_b": "Subflow Bwd Bytes",
+    "correlation": 0.9999998601336887
+  },
+  {
+    "feature_a": "Flow Packets/s",
+    "feature_b": "Fwd Packets/s",
+    "correlation": 0.9801095516340471
+  },
+  {
+    "feature_a": "Total Length of Fwd Packets",
+    "feature_b": "Subflow Fwd Bytes",
+    "correlation": 0.9999993581285761
+  }
+]

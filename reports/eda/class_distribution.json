@@ -1,0 +1,36 @@
+{
+  "counts": {
+    "BENIGN": 2148386,
+    "DoS Hulk": 172849,
+    "DDoS": 128016,
+    "PortScan": 90819,
+    "DoS GoldenEye": 10286,
+    "FTP-Patator": 5933,
+    "DoS slowloris": 5385,
+    "DoS Slowhttptest": 5228,
+    "SSH-Patator": 3219,
+    "Bot": 1953,
+    "Web Attack \ufffd Brute Force": 1470,
+    "Web Attack \ufffd XSS": 652,
+    "Infiltration": 36,
+    "Web Attack \ufffd Sql Injection": 21,
+    "Heartbleed": 11
+  },
+  "percentages": {
+    "BENIGN": 83.45631994232137,
+    "DoS Hulk": 6.714501698349509,
+    "DDoS": 4.972916530705476,
+    "PortScan": 3.5279598362871876,
+    "DoS GoldenEye": 0.39957051801990784,
+    "FTP-Patator": 0.23047364217500615,
+    "DoS slowloris": 0.20918600423266615,
+    "DoS Slowhttptest": 0.203087173654295,
+    "SSH-Patator": 0.125045449883928,
+    "Bot": 0.07586634471056582,
+    "Web Attack \ufffd Brute Force": 0.057103700319780716,
+    "Web Attack \ufffd XSS": 0.02532762762482791,
+    "Infiltration": 0.0013984579670150382,
+    "Web Attack \ufffd Sql Injection": 0.0008157671474254388,
+    "Heartbleed": 0.00042730660103237276
+  }
+}

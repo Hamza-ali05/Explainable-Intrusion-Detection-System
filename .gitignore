@@ -1,0 +1,28 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# Data / outputs (generated)
+data/raw/
+data/interim/
+data/processed/
+artifacts/
+artifacts/models/*.joblib
+checkpoints/
+logs/
+reports/predictions/
+*.parquet
+*.joblib
+
+# Keep placeholder files so empty dirs exist in git
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!artifacts/.gitkeep
+!checkpoints/.gitkeep
+!logs/.gitkeep
+!reports/.gitkeep
+!reports/predictions/.gitkeep
+

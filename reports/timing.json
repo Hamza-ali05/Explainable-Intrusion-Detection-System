@@ -1,0 +1,52 @@
+{
+  "generated_at": "2026-07-10T08:00:59.783233+00:00",
+  "steps": {
+    "discover": {
+      "wall_seconds": 0.0334,
+      "skipped": true,
+      "recorded_at": "2026-07-10T07:17:48.386340+00:00"
+    },
+    "load": {
+      "wall_seconds": 75.119,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:19:03.521759+00:00"
+    },
+    "integrate": {
+      "wall_seconds": 150.7355,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:21:34.338558+00:00"
+    },
+    "eda": {
+      "wall_seconds": 225.8498,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:25:20.325644+00:00"
+    },
+    "clean": {
+      "wall_seconds": 43.8278,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:26:04.176251+00:00"
+    },
+    "split": {
+      "wall_seconds": 19.7429,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:26:23.924910+00:00"
+    },
+    "preprocess": {
+      "wall_seconds": 142.4898,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:28:46.440695+00:00"
+    },
+    "balance": {
+      "wall_seconds": 360.7577,
+      "skipped": false,
+      "recorded_at": "2026-07-10T07:34:47.215172+00:00"
+    },
+    "train": {
+      "wall_seconds": 1572.5484,
+      "skipped": false,
+      "recorded_at": "2026-07-10T08:00:59.783203+00:00"
+    }
+  },
+  "total_wall_seconds": 2591.1043,
+  "explainability": {}
+}
