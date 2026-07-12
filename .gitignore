@@ -1,9 +1,8 @@
-# Python / library dependencies (do not commit installed packages)
+# --- Python library environments (installed dependencies) ---
 .venv/
 venv/
 env/
 ENV/
-.env/
 *.egg-info/
 .eggs/
 dist/
@@ -13,33 +12,47 @@ pip-wheel-metadata/
 *.egg
 requirements.lock.txt
 
-# Python cache
+# --- Python cache / tooling ---
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.cache/
 
-# Data / outputs (generated)
-data/raw/
-data/interim/
-data/processed/
-artifacts/
-artifacts/models/*.joblib
-checkpoints/
-logs/
-reports/predictions/
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Secrets (if ever added) ---
+.env
+.env.*
+!.env.example
+
+# --- Data / outputs (generated; large or reproducible from pipeline) ---
+# Ignore contents but keep folder placeholders via .gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/interim/*
+!data/interim/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+artifacts/*
+!artifacts/.gitkeep
+checkpoints/*
+!checkpoints/.gitkeep
+logs/*
+!logs/.gitkeep
+reports/predictions/*
+!reports/predictions/.gitkeep
 *.parquet
 *.joblib
-
-# Keep placeholder files so empty dirs exist in git
-!data/raw/.gitkeep
-!data/interim/.gitkeep
-!data/processed/.gitkeep
-!artifacts/.gitkeep
-!checkpoints/.gitkeep
-!logs/.gitkeep
-!reports/.gitkeep
-!reports/predictions/.gitkeep
