@@ -1,11 +1,21 @@
 # Explainable AI for cybersecurity threat classification
 
-Minimal MSc dissertation project for tabular cyber threat classification and post-hoc explainability on CICIDS-2017 network flows.
+Minimal MSc dissertation project for tabular cyber threat classification and post-hoc explainability on standardized multi-corpus network flows (CICIDS-2017, UNSW-NB15, KDD Cup 99).
+
+## Quick Start
+
+1. Place CICIDS-2017 day CSVs in `data/raw/CICIDS2017/`.
+2. `pip install -r requirements.txt`
+3. `python -m src.pipeline all`
+4. `uvicorn api.main:app --reload --port 8000`
+5. `cd frontend && npm install && npm run dev`
+6. Open `http://localhost:3000`
+7. Results: `reports/model_card.md` and `reports/xai/quality/`
 
 ## Layout
 
 - `src/core.py`: configuration, paths, logging, checkpointing.
-- `src/data.py`: CSV discovery/loading and integration.
+- `src/data.py`: CSV discovery/loading and shared-schema integration.
 - `src/prep.py`: cleaning, taxonomy mapping, split, preprocessing, balancing.
 - `src/model.py`: train and evaluate Decision Tree, Random Forest, XGBoost.
 - `src/xai.py`: SHAP, LIME, fidelity, stability, comprehensibility metrics.
@@ -21,12 +31,17 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Obtaining CICIDS-2017
+## Obtaining datasets
 
-1. Visit the [CICIDS-2017 dataset page](https://www.unb.ca/cic/datasets/ids-2017.html).
-2. Download the CSV edition (MachineLearningCSV.zip or per-day PCAP-derived CSVs).
-3. Extract the CSV files into `data/raw/CICIDS2017/` (eight daily files, e.g. `Monday-WorkingHours.pcap_ISCX.csv`).
-4. Run `python -m src.pipeline discover` to record SHA-256 checksums in `reports/provenance.md`.
+Place IDS CSVs under `data/raw/` (subfolders allowed). Supported types:
+
+1. **CICIDS-2017** — [dataset page](https://www.unb.ca/cic/datasets/ids-2017.html); extract day CSVs into `data/raw/CICIDS2017/`.
+2. **UNSW-NB15** — CSV edition with `attack_cat` + `label` columns under e.g. `data/raw/UNSW-NB15/`.
+3. **KDD Cup 99** — 42-column schema including `protocol_type`, `service`, `flag`, and `label`.
+
+`integrate` projects every supported corpus onto one shared feature schema (`duration`, `src_bytes`, `dst_bytes`, `src_packets`, `dst_packets`, `protocol`, `service`) and maps labels into the project threat taxonomy. Unknown / non-IDS CSVs are skipped.
+
+Run `python -m src.pipeline discover` to record SHA-256 checksums in `reports/provenance.md`.
 
 `data/raw/` is gitignored; only checksums and provenance metadata are committed.
 
@@ -40,7 +55,7 @@ pip install -r requirements.txt
 | --- | --- |
 | `discover` | Scan raw CSVs, write manifest and provenance |
 | `load` | Load raw CSVs to interim parquet |
-| `integrate` | Merge primary dataset, map labels |
+| `integrate` | Project supported corpora onto shared schema, map labels |
 | `eda` | Exploratory analysis reports |
 | `clean` | Remove identifiers, inf/nan, high-correlation features |
 | `split` | Stratified train/val/test indices |

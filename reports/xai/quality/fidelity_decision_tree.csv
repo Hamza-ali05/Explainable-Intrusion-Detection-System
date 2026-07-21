@@ -1,0 +1,5 @@
+model,k_removed,baseline_f1_macro,ablated_f1_macro,f1_drop,removed_features
+decision_tree,1,0.6106299129042978,0.6960916957444057,-0.08546178284010786,['Average Packet Size']
+decision_tree,3,0.6106299129042978,0.6985678455717526,-0.08793793266745475,"['Average Packet Size', 'Bwd Packet Length Std', 'Packet Length Mean']"
+decision_tree,5,0.6106299129042978,0.6985699792701494,-0.08794006636585161,"['Average Packet Size', 'Bwd Packet Length Std', 'Fwd Packet Length Max', 'Packet Length Mean', 'Packet Length Std']"
+decision_tree,10,0.6106299129042978,0.7089587222869717,-0.09832880938267385,"['Average Packet Size', 'Bwd Packet Length Mean', 'Bwd Packet Length Std', 'Fwd Packet Length Max', 'Fwd Packet Length Std', 'Init_Win_bytes_backward', 'Init_Win_bytes_forward', 'Packet Length Mean', 'Packet Length Std', 'Total Length of Fwd Packets']"

@@ -519,3 +519,150 @@ def test_checkpoint_status_rows_match_step_order() -> None:
     rows = checkpoint_status_rows()
     assert [row["Step"] for row in rows] == STEP_ORDER
     assert all(row["Status"] in {"Done", "Pending"} for row in rows)
+
+
+def test_detect_dataset_type_requires_kdd_schema() -> None:
+    from src.data import _detect_dataset_type
+
+    assert _detect_dataset_type(Path("kdd_fake.csv"), ["foo", "bar", "label"]) == "unknown"
+    assert (
+        _detect_dataset_type(
+            Path("kdd_train.csv"),
+            ["duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes", "label"],
+        )
+        == "kddcup_csv"
+    )
+
+
+def test_map_threat_class_multi_corpus() -> None:
+    from src.prep import map_threat_class
+
+    assert map_threat_class("Heartbleed") == "DoS"
+    assert map_threat_class("neptune.") == "DoS"
+    assert map_threat_class("Normal") == "BENIGN"
+    assert map_threat_class("Reconnaissance") == "PortScan"
+    assert map_threat_class("guess_passwd") == "BruteForce"
+
+
+def test_project_and_integrate_shared_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.data import (
+        SHARED_FEATURE_COLUMNS,
+        _project_to_shared_schema,
+        integrate,
+    )
+    from src.core import write_json, write_parquet
+
+    paths = _make_project_dirs(tmp_path)
+    loaded_dir = paths["interim"] / "loaded"
+    loaded_dir.mkdir(parents=True, exist_ok=True)
+
+    cicids = pd.DataFrame(
+        {
+            "Flow Duration": [100, 200],
+            "Total Length of Fwd Packets": [10, 20],
+            "Total Length of Bwd Packets": [5, 15],
+            "Total Fwd Packets": [2, 4],
+            "Total Backward Packets": [1, 3],
+            "Label": ["BENIGN", "DDoS"],
+        }
+    )
+    unsw = pd.DataFrame(
+        {
+            "dur": [1.0],
+            "sbytes": [100],
+            "dbytes": [50],
+            "Spkts": [3],
+            "Dpkts": [2],
+            "proto": ["tcp"],
+            "service": ["http"],
+            "attack_cat": ["DoS"],
+            "label": [1],
+        }
+    )
+    kdd = pd.DataFrame(
+        {
+            "duration": [0],
+            "protocol_type": ["tcp"],
+            "service": ["http"],
+            "flag": ["SF"],
+            "src_bytes": [100],
+            "dst_bytes": [200],
+            "label": ["neptune."],
+        }
+    )
+    fraud = pd.DataFrame({"# comment": [1], "Unnamed: 1": [2]})
+
+    cicids_pq = loaded_dir / "cicids.parquet"
+    unsw_pq = loaded_dir / "unsw.parquet"
+    kdd_pq = loaded_dir / "kdd.parquet"
+    fraud_pq = loaded_dir / "fraud.parquet"
+    write_parquet(cicids, cicids_pq)
+    write_parquet(unsw, unsw_pq)
+    write_parquet(kdd, kdd_pq)
+    write_parquet(fraud, fraud_pq)
+
+    projected = _project_to_shared_schema(cicids, "cicids_csv", "cicids.csv")
+    assert list(projected.columns) == [
+        "duration",
+        "src_bytes",
+        "dst_bytes",
+        "src_packets",
+        "dst_packets",
+        "protocol",
+        "service",
+        "label",
+        "threat_class",
+        "source_file",
+        "dataset_source",
+    ]
+    assert projected["threat_class"].tolist() == ["BENIGN", "DDoS"]
+
+    load_index = {
+        "files": [
+            {
+                "relative_path": "CICIDS2017/a.csv",
+                "detected_type": "cicids_csv",
+                "parquet_path": str(cicids_pq),
+            },
+            {
+                "relative_path": "UNSW/b.csv",
+                "detected_type": "unsw_nb15_csv",
+                "parquet_path": str(unsw_pq),
+            },
+            {
+                "relative_path": "KDD/c.csv",
+                "detected_type": "kddcup_csv",
+                "parquet_path": str(kdd_pq),
+            },
+            {
+                "relative_path": "KDD Cup 99/fraud.csv",
+                "detected_type": "unknown",
+                "parquet_path": str(fraud_pq),
+            },
+        ]
+    }
+    index_path = paths["interim"] / "load_index.json"
+    write_json(load_index, index_path)
+    integrated_path = paths["interim"] / "integrated.parquet"
+    report_path = paths["interim"] / "integration_report.md"
+    mapping_path = paths["reports"] / "label_mapping.json"
+
+    monkeypatch.setattr("src.core.CHECKPOINTS_DIR", paths["checkpoints"])
+    monkeypatch.setattr("src.data.PROVENANCE_MD", paths["reports"] / "provenance.md")
+    (paths["reports"] / "provenance.md").write_text("# Data provenance\n", encoding="utf-8")
+
+    result = integrate(
+        {
+            "load_index_path": index_path,
+            "integrated_path": integrated_path,
+            "integration_report_path": report_path,
+            "label_mapping_path": mapping_path,
+        }
+    )
+    assert set(result["merged_types"]) == {"cicids_csv", "unsw_nb15_csv", "kddcup_csv"}
+    out = pd.read_parquet(integrated_path)
+    assert set(SHARED_FEATURE_COLUMNS).issubset(out.columns)
+    assert "fraud.csv" not in out["source_file"].astype(str).str.cat(sep=" ")
+    assert set(out["dataset_source"]) == {"cicids", "unsw", "kdd"}
+    assert set(out["threat_class"]).issubset(set(THREAT_CLASSES))
+    assert len(out) == 4  # 2 cicids + 1 unsw + 1 kdd

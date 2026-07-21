@@ -22,7 +22,7 @@ from src.core import (
     write_json,
     write_parquet,
 )
-from src.prep import LABEL_MAP
+from src.prep import map_threat_class
 
 
 DISCOVER_MANIFEST_JSON = INTERIM_DIR / "manifest.json"
@@ -34,6 +34,21 @@ LOAD_FAILURES_JSON = INTERIM_DIR / "load_failures.json"
 INTEGRATED_PARQUET = INTERIM_DIR / "integrated.parquet"
 INTEGRATION_REPORT_MD = INTERIM_DIR / "integration_report.md"
 LABEL_MAPPING_JSON = REPORTS_DIR / "label_mapping.json"
+
+SUPPORTED_DATASET_TYPES = frozenset({"cicids_csv", "unsw_nb15_csv", "kddcup_csv"})
+
+# Cross-corpus semantic schema (identifiers like dst_port intentionally omitted).
+SHARED_FEATURE_COLUMNS = [
+    "duration",
+    "src_bytes",
+    "dst_bytes",
+    "src_packets",
+    "dst_packets",
+    "protocol",
+    "service",
+]
+SHARED_META_COLUMNS = ["label", "threat_class", "source_file", "dataset_source"]
+SHARED_SCHEMA_COLUMNS = SHARED_FEATURE_COLUMNS + SHARED_META_COLUMNS
 
 UNSW_NB15_COLUMNS = [
     "srcip", "sport", "dstip", "dsport", "proto", "state", "dur", "sbytes", "dbytes", "sttl",
@@ -76,11 +91,21 @@ def _detect_dataset_type(path: Path, columns: list[str]) -> str:
     if (
         "label" in colset
         and "flow duration" in colset
-    ) or any(day in lowered_name for day in ["monday-workinghours", "tuesday-workinghours", "wednesday-workinghours", "thursday-workinghours", "friday-workinghours"]):
+    ) or any(
+        day in lowered_name
+        for day in [
+            "monday-workinghours",
+            "tuesday-workinghours",
+            "wednesday-workinghours",
+            "thursday-workinghours",
+            "friday-workinghours",
+        ]
+    ):
         return "cicids_csv"
     if {"attack_cat", "label"}.issubset(colset):
         return "unsw_nb15_csv"
-    if {"protocol_type", "service", "flag"}.issubset(colset) or "kdd" in lowered_name:
+    # Require KDD schema columns — do not trust filename alone (avoids non-IDS CSVs).
+    if {"protocol_type", "service", "flag"}.issubset(colset):
         return "kddcup_csv"
     return "unknown"
 
@@ -469,58 +494,120 @@ def _standardize_label_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _map_to_threat_class(raw_label: str) -> str:
-    label = raw_label.strip()
-    lowered = label.lower()
-    if lowered == "benign":
-        return "BENIGN"
-    if lowered == "ddos":
-        return "DDoS"
-    if lowered in {"portscan", "port scan"}:
-        return "PortScan"
-    if lowered in {"ftp-patator", "ssh-patator"}:
-        return "BruteForce"
-    if lowered.startswith("dos "):
-        return "DoS"
-    if lowered.startswith("web attack"):
-        return "WebAttack"
-    if lowered == "bot":
-        return "Botnet"
-    if lowered == "infiltration":
-        return "Infiltration"
-    return label
+def _col_lookup(columns: list[str]) -> dict[str, str]:
+    """Map normalized column name → actual column name."""
+    mapping: dict[str, str] = {}
+    for col in columns:
+        key = re.sub(r"[\s_\-]+", " ", str(col).strip().lower())
+        mapping[key] = col
+    return mapping
 
 
-def _pick_primary_dataset(entries: list[dict[str, Any]]) -> str:
-    counts: dict[str, int] = {}
-    for entry in entries:
-        dataset_type = entry.get("detected_type", "unknown")
-        counts[dataset_type] = counts.get(dataset_type, 0) + 1
-    ranked_types = sorted(
-        ((k, v) for k, v in counts.items() if k != "unknown"),
-        key=lambda kv: kv[1],
-        reverse=True,
-    )
-    return ranked_types[0][0] if ranked_types else "unknown"
+def _get_series(df: pd.DataFrame, lookup: dict[str, str], *candidates: str) -> pd.Series:
+    for name in candidates:
+        key = re.sub(r"[\s_\-]+", " ", name.strip().lower())
+        actual = lookup.get(key)
+        if actual is not None and actual in df.columns:
+            return df[actual]
+    return pd.Series(np.nan, index=df.index)
+
+
+def _empty_shared_frame(n: int, source_file: str, dataset_source: str) -> pd.DataFrame:
+    data: dict[str, Any] = {col: pd.Series([np.nan] * n) for col in SHARED_FEATURE_COLUMNS}
+    data["label"] = pd.Series(["UNKNOWN"] * n)
+    data["threat_class"] = pd.Series(["UNKNOWN"] * n)
+    data["source_file"] = pd.Series([source_file] * n)
+    data["dataset_source"] = pd.Series([dataset_source] * n)
+    return pd.DataFrame(data)
+
+
+def _as_optional_str(series: pd.Series) -> pd.Series:
+    out = series.copy()
+    mask = out.notna()
+    out.loc[mask] = out.loc[mask].astype(str)
+    return out
+
+
+def _project_to_shared_schema(
+    df: pd.DataFrame,
+    detected_type: str,
+    source_file: str,
+) -> pd.DataFrame:
+    """Project a corpus-specific table onto the shared semantic schema."""
+    lookup = _col_lookup([str(c) for c in df.columns])
+    n = len(df)
+
+    if detected_type == "cicids_csv":
+        out = _empty_shared_frame(n, source_file, "cicids")
+        out["duration"] = pd.to_numeric(_get_series(df, lookup, "Flow Duration"), errors="coerce")
+        out["src_bytes"] = pd.to_numeric(
+            _get_series(df, lookup, "Total Length of Fwd Packets"), errors="coerce"
+        )
+        out["dst_bytes"] = pd.to_numeric(
+            _get_series(df, lookup, "Total Length of Bwd Packets"), errors="coerce"
+        )
+        out["src_packets"] = pd.to_numeric(_get_series(df, lookup, "Total Fwd Packets"), errors="coerce")
+        out["dst_packets"] = pd.to_numeric(
+            _get_series(df, lookup, "Total Backward Packets"), errors="coerce"
+        )
+        label_col = _find_label_column([str(c) for c in df.columns])
+        if label_col:
+            out["label"] = df[label_col].map(_standardize_label_text)
+    elif detected_type == "unsw_nb15_csv":
+        out = _empty_shared_frame(n, source_file, "unsw")
+        out["duration"] = pd.to_numeric(_get_series(df, lookup, "dur"), errors="coerce")
+        out["src_bytes"] = pd.to_numeric(_get_series(df, lookup, "sbytes"), errors="coerce")
+        out["dst_bytes"] = pd.to_numeric(_get_series(df, lookup, "dbytes"), errors="coerce")
+        out["src_packets"] = pd.to_numeric(_get_series(df, lookup, "Spkts"), errors="coerce")
+        out["dst_packets"] = pd.to_numeric(_get_series(df, lookup, "Dpkts"), errors="coerce")
+        out["protocol"] = _as_optional_str(_get_series(df, lookup, "proto"))
+        out["service"] = _as_optional_str(_get_series(df, lookup, "service"))
+        attack_cat = _get_series(df, lookup, "attack_cat")
+        if attack_cat.notna().any():
+            out["label"] = attack_cat.map(_standardize_label_text)
+        else:
+            binary = _get_series(df, lookup, "label")
+            out["label"] = binary.map(
+                lambda v: "Normal" if str(v).strip() in {"0", "0.0"} else "Generic"
+            )
+    elif detected_type == "kddcup_csv":
+        out = _empty_shared_frame(n, source_file, "kdd")
+        out["duration"] = pd.to_numeric(_get_series(df, lookup, "duration"), errors="coerce")
+        out["src_bytes"] = pd.to_numeric(_get_series(df, lookup, "src_bytes"), errors="coerce")
+        out["dst_bytes"] = pd.to_numeric(_get_series(df, lookup, "dst_bytes"), errors="coerce")
+        out["protocol"] = _as_optional_str(_get_series(df, lookup, "protocol_type"))
+        out["service"] = _as_optional_str(_get_series(df, lookup, "service"))
+        label_col = _find_label_column([str(c) for c in df.columns])
+        if label_col:
+            out["label"] = df[label_col].map(_standardize_label_text)
+    else:
+        raise ValueError(f"Unsupported dataset type for shared schema: {detected_type}")
+
+    out["threat_class"] = out["label"].map(map_threat_class)
+    return out[SHARED_SCHEMA_COLUMNS].copy()
 
 
 def _render_integration_report(
     report_path: Path,
-    primary_dataset: str,
+    merged_types: list[str],
     before_rows: int,
     after_rows: int,
     contributions: dict[str, int],
     raw_distribution: dict[str, int],
     mapped_distribution: dict[str, int],
     schema_notes: list[str],
+    dropped_unmapped: int = 0,
 ) -> None:
+    types_text = ", ".join(f"`{t}`" for t in merged_types) if merged_types else "`none`"
     lines = [
         "# Integration Report",
         "",
         f"Generated: {datetime.now(timezone.utc).isoformat()}",
-        f"- Primary dataset: `{primary_dataset}`",
+        f"- Merged dataset type(s): {types_text}",
+        f"- Shared schema features: {', '.join(f'`{c}`' for c in SHARED_FEATURE_COLUMNS)}",
         f"- Rows before deduplication: {before_rows}",
         f"- Rows after deduplication: {after_rows}",
+        f"- Rows dropped (unmapped / outside taxonomy): {dropped_unmapped}",
         "",
         "## Per-file contribution",
         "",
@@ -562,11 +649,11 @@ def integrate(params: dict[str, Any] | None = None) -> dict[str, Any]:
     load_index = read_json(load_index_path)
     entries = load_index.get("files", [])
     if not entries:
-        empty_df = pd.DataFrame(columns=["label", "threat_class"])
+        empty_df = pd.DataFrame(columns=SHARED_SCHEMA_COLUMNS)
         write_parquet(empty_df, integrated_path)
         _render_integration_report(
             integration_report_path,
-            "unknown",
+            merged_types=[],
             before_rows=0,
             after_rows=0,
             contributions={},
@@ -580,55 +667,55 @@ def integrate(params: dict[str, Any] | None = None) -> dict[str, Any]:
             "rows": 0,
         }
 
-    primary_dataset = _pick_primary_dataset(entries)
-    primary_entries = [e for e in entries if e.get("detected_type") == primary_dataset]
-    if not primary_entries:
-        primary_entries = entries
+    usable_entries = [e for e in entries if e.get("detected_type") in SUPPORTED_DATASET_TYPES]
+    skipped_unknown = [
+        e.get("relative_path") for e in entries if e.get("detected_type") not in SUPPORTED_DATASET_TYPES
+    ]
 
     frames: list[pd.DataFrame] = []
     contributions: dict[str, int] = {}
     schema_notes: list[str] = []
-    common_columns: set[str] | None = None
+    merged_types: list[str] = []
 
-    for entry in primary_entries:
+    for path in skipped_unknown:
+        schema_notes.append(f"Skipped non-IDS / unknown schema file: `{path}`.")
+
+    for entry in usable_entries:
         parquet_path = Path(entry["parquet_path"])
+        relative_path = entry["relative_path"]
+        detected_type = entry.get("detected_type", "unknown")
         if not parquet_path.exists():
-            schema_notes.append(f"Missing parquet for `{entry['relative_path']}`.")
+            schema_notes.append(f"Missing parquet for `{relative_path}`.")
             continue
-        df = read_parquet(parquet_path)
-        label_col = _find_label_column([str(c) for c in df.columns])
-        if label_col and label_col != "label":
-            df = df.rename(columns={label_col: "label"})
-        if "label" not in df.columns:
-            df["label"] = "UNKNOWN"
-            schema_notes.append(f"`{entry['relative_path']}` has no label column; defaulted to UNKNOWN.")
-        if common_columns is None:
-            common_columns = set(df.columns)
-        else:
-            prev = set(common_columns)
-            common_columns = common_columns.intersection(set(df.columns))
-            if set(df.columns) != prev:
-                schema_notes.append(
-                    f"Schema mismatch for `{entry['relative_path']}`; aligned by intersection."
-                )
-        contributions[entry["relative_path"]] = int(len(df))
-        frames.append(df)
+        try:
+            raw_df = read_parquet(parquet_path)
+            projected = _project_to_shared_schema(raw_df, detected_type, relative_path)
+        except Exception as exc:
+            schema_notes.append(f"Failed to project `{relative_path}` ({detected_type}): {exc}")
+            LOGGER.warning("Projection failed for %s: %s", relative_path, exc)
+            continue
+        contributions[relative_path] = int(len(projected))
+        frames.append(projected)
+        if detected_type not in merged_types:
+            merged_types.append(detected_type)
+        schema_notes.append(
+            f"Projected `{relative_path}` ({detected_type}) → shared schema "
+            f"({len(SHARED_FEATURE_COLUMNS)} features)."
+        )
 
     if not frames:
-        raise RuntimeError("Integration failed: no readable parquet files were found for primary dataset.")
+        raise RuntimeError(
+            "Integration failed: no supported IDS datasets (cicids/unsw/kdd) could be projected."
+        )
 
-    assert common_columns is not None
-    keep_cols = sorted(common_columns)
-    aligned_frames = [df[keep_cols].copy() for df in frames]
-    integrated = pd.concat(aligned_frames, ignore_index=True)
-
+    integrated = pd.concat(frames, ignore_index=True)
     integrated["label"] = integrated["label"].map(_standardize_label_text)
     raw_distribution_series = integrated["label"].value_counts(dropna=False)
-    integrated["threat_class"] = integrated["label"].map(_map_to_threat_class)
-    integrated["threat_class"] = integrated["threat_class"].where(
-        integrated["threat_class"].isin(THREAT_CLASSES),
-        integrated["threat_class"],
-    )
+    integrated["threat_class"] = integrated["label"].map(map_threat_class)
+
+    before_filter = int(len(integrated))
+    integrated = integrated[integrated["threat_class"].isin(THREAT_CLASSES)].copy()
+    dropped_unmapped = before_filter - int(len(integrated))
     mapped_distribution_series = integrated["threat_class"].value_counts(dropna=False)
 
     before_rows = int(len(integrated))
@@ -645,17 +732,19 @@ def integrate(params: dict[str, Any] | None = None) -> dict[str, Any]:
     _append_label_mapping_to_provenance(observed_mapping)
     _render_integration_report(
         report_path=integration_report_path,
-        primary_dataset=primary_dataset,
+        merged_types=merged_types,
         before_rows=before_rows,
         after_rows=after_rows,
         contributions=contributions,
         raw_distribution={str(k): int(v) for k, v in raw_distribution_series.to_dict().items()},
         mapped_distribution={str(k): int(v) for k, v in mapped_distribution_series.to_dict().items()},
         schema_notes=schema_notes,
+        dropped_unmapped=dropped_unmapped,
     )
     LOGGER.info(
-        "Integrated dataset saved to %s (rows before dedup=%d, after=%d).",
+        "Integrated shared-schema dataset saved to %s (types=%s, rows before dedup=%d, after=%d).",
         integrated_path,
+        merged_types,
         before_rows,
         after_rows,
     )
@@ -663,7 +752,8 @@ def integrate(params: dict[str, Any] | None = None) -> dict[str, Any]:
         "output_paths": [str(integrated_path), str(integration_report_path), str(label_mapping_path)],
         "rows_before_dedup": before_rows,
         "rows_after_dedup": after_rows,
-        "primary_dataset": primary_dataset,
+        "merged_types": merged_types,
+        "dropped_unmapped": dropped_unmapped,
     }
 
 

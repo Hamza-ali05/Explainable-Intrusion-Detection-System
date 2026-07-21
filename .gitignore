@@ -38,6 +38,11 @@ Desktop.ini
 .env.*
 !.env.example
 
+# --- Node / frontend (dependencies & build output) ---
+/package-lock.json
+frontend/node_modules/
+frontend/dist/
+
 # --- Data / outputs (generated; large or reproducible from pipeline) ---
 # Ignore contents but keep folder placeholders via .gitkeep
 data/raw/*
@@ -46,6 +51,8 @@ data/interim/*
 !data/interim/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/manual/*
+!data/manual/.gitkeep
 artifacts/*
 !artifacts/.gitkeep
 checkpoints/*
@@ -56,3 +63,24 @@ reports/predictions/*
 !reports/predictions/.gitkeep
 *.parquet
 *.joblib
+
+# --- Regenerated run metadata ---
+reports/env.json
+reports/timing.json
+
+# --- Large ML tensor dumps ---
+*.npy
+
+# --- XAI figures (regenerate via explain-global / explain-local) ---
+# Keep reports/xai/quality/ for dissertation summaries (CSVs, MD, plots)
+reports/xai/global/
+reports/xai/local/
+reports/xai/decision_tree/
+reports/xai/random_forest/
+reports/xai/xgboost/
+reports/xai/local_instance_selection.json
+
+# --- Training / evaluation plot PNGs (regenerate via pipeline / train_plots) ---
+reports/train/*_train_curve.png
+reports/train/*_cv_results_plot.png
+reports/evaluate/**/*.png

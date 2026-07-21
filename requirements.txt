@@ -13,4 +13,7 @@ streamlit
 tqdm
 pyyaml
 pytest
+fastapi
+uvicorn
+python-multipart
 

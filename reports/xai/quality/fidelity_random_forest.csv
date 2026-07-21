@@ -1,0 +1,5 @@
+model,k_removed,baseline_f1_macro,ablated_f1_macro,f1_drop,removed_features
+random_forest,1,0.7724243679493298,0.8052597154697101,-0.03283534752038031,['Bwd Packet Length Std']
+random_forest,3,0.7724243679493298,0.7302259130032978,0.04219845494603203,"['Bwd Packet Length Std', 'Packet Length Std', 'Packet Length Variance']"
+random_forest,5,0.7724243679493298,0.8461476720104069,-0.07372330406107708,"['Average Packet Size', 'Avg Bwd Segment Size', 'Bwd Packet Length Std', 'Packet Length Std', 'Packet Length Variance']"
+random_forest,10,0.7724243679493298,0.7637306805321228,0.008693687417206997,"['Average Packet Size', 'Avg Bwd Segment Size', 'Bwd Packet Length Max', 'Bwd Packet Length Mean', 'Bwd Packet Length Std', 'Fwd Packet Length Max', 'Max Packet Length', 'Packet Length Std', 'Packet Length Variance', 'Total Length of Fwd Packets']"

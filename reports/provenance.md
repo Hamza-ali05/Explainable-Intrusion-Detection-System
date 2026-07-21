@@ -68,3 +68,25 @@ Raw CICIDS-2017 labels are mapped to the project threat taxonomy (see also `repo
 | `Web Attack � Brute Force` | `WebAttack` |
 | `Web Attack � Sql Injection` | `WebAttack` |
 | `Web Attack � XSS` | `WebAttack` |
+
+## Label mapping (2026-07-13T07:05:31.788379+00:00)
+
+Raw CICIDS-2017 labels are mapped to the project threat taxonomy (see also `reports/label_mapping.json`).
+
+| Raw label | Threat class |
+| --- | --- |
+| `BENIGN` | `BENIGN` |
+| `DDoS` | `DDoS` |
+| `DoS` | `DoS` |
+| `neptune.` | `DoS` |
+
+## Label mapping (2026-07-13T07:11:57.807957+00:00)
+
+Raw CICIDS-2017 labels are mapped to the project threat taxonomy (see also `reports/label_mapping.json`).
+
+| Raw label | Threat class |
+| --- | --- |
+| `BENIGN` | `BENIGN` |
+| `DDoS` | `DDoS` |
+| `DoS` | `DoS` |
+| `neptune.` | `DoS` |

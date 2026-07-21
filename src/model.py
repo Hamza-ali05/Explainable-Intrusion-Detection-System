@@ -1015,12 +1015,13 @@ def _write_model_card(winner: str, all_results: list[dict[str, Any]]) -> Path:
         "## Intended use",
         "",
         "- **Defensive network-flow analysis** for SOC / analyst decision support.",
-        "- Classifies tabular CICIDS-style flow records into the project threat taxonomy.",
+        "- Classifies tabular flow records (shared multi-corpus schema) into the project threat taxonomy.",
         "- Outputs are advisory signals only — not autonomous blocking or enforcement.",
         "",
         "## Training data",
         "",
-        "- CICIDS-2017 (and integrated project datasets) after clean → split → preprocess → balance.",
+        "- Standardized multi-corpus flows (CICIDS-2017, and UNSW-NB15 / KDD Cup 99 when present)",
+        "  after shared-schema integrate → clean → split → preprocess → balance.",
         "- Models trained on **balanced train split only**; validation used for model selection;",
         "  **test split held out** until final evaluation.",
         "- Tree models use **unscaled** features.",
@@ -1221,7 +1222,21 @@ def _load_inference_context(model_path: Path | None = None) -> None:
 
 
 def _prepare_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    from src.data import (
+        SHARED_FEATURE_COLUMNS,
+        SUPPORTED_DATASET_TYPES,
+        _detect_dataset_type,
+        _project_to_shared_schema,
+    )
+
     out = _sanitize_columns(df.copy())
+    cols = [str(c) for c in out.columns]
+    has_shared = sum(1 for c in SHARED_FEATURE_COLUMNS if c in out.columns) >= 3
+    if not has_shared:
+        detected = _detect_dataset_type(Path("upload.csv"), cols)
+        if detected in SUPPORTED_DATASET_TYPES:
+            out = _project_to_shared_schema(out, detected, "upload")
+
     try:
         label_col_present = any(
             _normalize_col(c) in {"label", "class", "threat class", "threat label"} for c in out.columns
@@ -1234,6 +1249,10 @@ def _prepare_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     id_cols = [c for c in out.columns if _is_identifier_column(c)]
     if id_cols:
         out = out.drop(columns=id_cols)
+
+    meta_drop = [c for c in ("source_file", "dataset_source") if c in out.columns]
+    if meta_drop:
+        out = out.drop(columns=meta_drop)
 
     return out
 

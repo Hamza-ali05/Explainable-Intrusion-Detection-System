@@ -77,6 +77,7 @@ IDENTIFIER_PATTERNS = [
     r"^destination\s*port$",
     r"^src\s*port$",
     r"^dst\s*port$",
+    r"^dstport$",
     r"^timestamp$",
     r"^stime$",
     r"^ltime$",
@@ -93,17 +94,25 @@ PACKET_COUNT_PATTERNS = [
     r"packet",
 ]
 
-METADATA_COLUMNS = {"source_file", "label", "threat_class", "threat_label"}
+METADATA_COLUMNS = {
+    "source_file",
+    "label",
+    "threat_class",
+    "threat_label",
+    "dataset_source",
+}
 
 
-# --- label mapping (kept for tests / backwards compatibility) ---
+# --- label mapping (CICIDS + UNSW-NB15 + KDD Cup 99 → project taxonomy) ---
 LABEL_MAP: dict[str, str] = {
+    # CICIDS-2017
     "BENIGN": "BENIGN",
     "DDoS": "DDoS",
     "DoS Hulk": "DoS",
     "DoS GoldenEye": "DoS",
     "DoS slowloris": "DoS",
     "DoS Slowhttptest": "DoS",
+    "Heartbleed": "DoS",
     "PortScan": "PortScan",
     "FTP-Patator": "BruteForce",
     "SSH-Patator": "BruteForce",
@@ -112,7 +121,144 @@ LABEL_MAP: dict[str, str] = {
     "Web Attack - Sql Injection": "WebAttack",
     "Infiltration": "Infiltration",
     "Bot": "Botnet",
+    # UNSW-NB15 attack_cat
+    "Normal": "BENIGN",
+    "DoS": "DoS",
+    "Exploits": "WebAttack",
+    "Fuzzers": "PortScan",
+    "Reconnaissance": "PortScan",
+    "Analysis": "Infiltration",
+    "Backdoor": "Infiltration",
+    "Shellcode": "Infiltration",
+    "Worms": "Botnet",
+    "Generic": "DoS",
+    # KDD Cup 99 (with and without trailing '.')
+    "normal": "BENIGN",
+    "normal.": "BENIGN",
+    "back": "DoS",
+    "back.": "DoS",
+    "land": "DoS",
+    "land.": "DoS",
+    "neptune": "DoS",
+    "neptune.": "DoS",
+    "pod": "DoS",
+    "pod.": "DoS",
+    "smurf": "DoS",
+    "smurf.": "DoS",
+    "teardrop": "DoS",
+    "teardrop.": "DoS",
+    "apache2": "DoS",
+    "apache2.": "DoS",
+    "udpstorm": "DoS",
+    "udpstorm.": "DoS",
+    "processtable": "DoS",
+    "processtable.": "DoS",
+    "mailbomb": "DoS",
+    "mailbomb.": "DoS",
+    "ipsweep": "PortScan",
+    "ipsweep.": "PortScan",
+    "nmap": "PortScan",
+    "nmap.": "PortScan",
+    "portsweep": "PortScan",
+    "portsweep.": "PortScan",
+    "satan": "PortScan",
+    "satan.": "PortScan",
+    "mscan": "PortScan",
+    "mscan.": "PortScan",
+    "saint": "PortScan",
+    "saint.": "PortScan",
+    "guess_passwd": "BruteForce",
+    "guess_passwd.": "BruteForce",
+    "ftp_write": "BruteForce",
+    "ftp_write.": "BruteForce",
+    "imap": "BruteForce",
+    "imap.": "BruteForce",
+    "phf": "BruteForce",
+    "phf.": "BruteForce",
+    "multihop": "BruteForce",
+    "multihop.": "BruteForce",
+    "warezclient": "BruteForce",
+    "warezclient.": "BruteForce",
+    "warezmaster": "BruteForce",
+    "warezmaster.": "BruteForce",
+    "spy": "BruteForce",
+    "spy.": "BruteForce",
+    "sendmail": "BruteForce",
+    "sendmail.": "BruteForce",
+    "named": "BruteForce",
+    "named.": "BruteForce",
+    "snmpgetattack": "BruteForce",
+    "snmpgetattack.": "BruteForce",
+    "snmpguess": "BruteForce",
+    "snmpguess.": "BruteForce",
+    "xlock": "BruteForce",
+    "xlock.": "BruteForce",
+    "xsnoop": "BruteForce",
+    "xsnoop.": "BruteForce",
+    "worm": "Botnet",
+    "worm.": "Botnet",
+    "buffer_overflow": "Infiltration",
+    "buffer_overflow.": "Infiltration",
+    "loadmodule": "Infiltration",
+    "loadmodule.": "Infiltration",
+    "perl": "Infiltration",
+    "perl.": "Infiltration",
+    "rootkit": "Infiltration",
+    "rootkit.": "Infiltration",
+    "httptunnel": "WebAttack",
+    "httptunnel.": "WebAttack",
+    "ps": "Infiltration",
+    "ps.": "Infiltration",
+    "sqlattack": "WebAttack",
+    "sqlattack.": "WebAttack",
+    "xterm": "Infiltration",
+    "xterm.": "Infiltration",
 }
+
+
+def _normalize_label_key(value: str) -> str:
+    text = str(value).strip().lower().rstrip(".")
+    text = re.sub(r"[\s_\-]+", " ", text)
+    text = text.replace("�", "-")
+    return text
+
+
+_LABEL_MAP_NORMALIZED: dict[str, str] = {
+    _normalize_label_key(k): v for k, v in LABEL_MAP.items()
+}
+
+
+def map_threat_class(raw_label: Any) -> str:
+    """Map a raw corpus label to the project threat taxonomy."""
+    if raw_label is None or (isinstance(raw_label, float) and np.isnan(raw_label)):
+        return "UNKNOWN"
+    label = str(raw_label).strip()
+    if not label or label.lower() == "nan":
+        return "UNKNOWN"
+    if label in LABEL_MAP:
+        return LABEL_MAP[label]
+    normalized = _normalize_label_key(label)
+    if normalized in _LABEL_MAP_NORMALIZED:
+        return _LABEL_MAP_NORMALIZED[normalized]
+    if normalized == "benign" or normalized == "normal":
+        return "BENIGN"
+    if normalized == "ddos":
+        return "DDoS"
+    if normalized in {"portscan", "port scan"}:
+        return "PortScan"
+    if normalized in {"ftp-patator", "ftp patator", "ssh-patator", "ssh patator"}:
+        return "BruteForce"
+    if normalized.startswith("dos "):
+        return "DoS"
+    if normalized.startswith("web attack"):
+        return "WebAttack"
+    if normalized == "bot":
+        return "Botnet"
+    if normalized == "infiltration":
+        return "Infiltration"
+    if normalized == "heartbleed":
+        return "DoS"
+    return label
 
 
 def _normalize_col(name: str) -> str:
@@ -186,7 +332,7 @@ def _resolve_target_column(df: pd.DataFrame) -> str:
     if "threat label" in normalized_to_actual:
         return normalized_to_actual["threat label"]
     label_col = _resolve_label_column(df)
-    mapped = df[label_col].astype(str).map(LABEL_MAP).fillna(df[label_col].astype(str))
+    mapped = df[label_col].map(map_threat_class)
     df["threat_class"] = mapped
     df["threat_label"] = mapped
     return "threat_class"
@@ -196,7 +342,7 @@ def map_labels(df: pd.DataFrame) -> pd.DataFrame:
     """Map raw labels to the project threat taxonomy (used by tests)."""
     out = _sanitize_columns(df)
     label_col = _resolve_label_column(out)
-    out["threat_label"] = out[label_col].astype(str).map(LABEL_MAP).fillna("BENIGN")
+    out["threat_label"] = out[label_col].map(map_threat_class)
     out = out[out["threat_label"].isin(THREAT_CLASSES)].copy()
     return out
 
