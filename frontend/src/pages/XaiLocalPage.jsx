@@ -5,7 +5,6 @@ import Card from "../components/Card";
 import ErrorCard from "../components/ErrorCard";
 import ImageCard from "../components/ImageCard";
 import PageSkeleton from "../components/PageSkeleton";
-import PageTitle from "../components/PageTitle";
 import Select from "../components/Select";
 import { EXPLAINERS, apiError } from "../utils/constants";
 
@@ -81,7 +80,6 @@ export default function XaiLocalPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle>XAI Local</PageTitle>
       <ErrorCard error={error} />
 
       <Card title="Instances">

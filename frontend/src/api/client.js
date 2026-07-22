@@ -28,6 +28,11 @@ export const getXaiQuality = (metric) =>
 
 export const getPredictSamples = () => api.get("/predict/samples").then((r) => r.data);
 
+export const refreshPredictSample = (threatClass) =>
+  api
+    .get("/predict/samples/refresh", { params: { threat_class: threatClass } })
+    .then((r) => r.data);
+
 export const predictSingle = (model, features) =>
   api.post("/predict/single", { model, features }).then((r) => r.data);
 
@@ -46,9 +51,5 @@ export const predictDemo = (model) => {
 
 export const explainRow = (model, row) =>
   api.post("/predict/explain", { model, row }).then((r) => r.data);
-
-export const getReports = () => api.get("/reports").then((r) => r.data);
-export const getReportFile = (path) =>
-  api.get("/reports/file", { params: { path } }).then((r) => r.data);
 
 export const getGoogleAlerts = () => api.get("/google/alerts").then((r) => r.data);

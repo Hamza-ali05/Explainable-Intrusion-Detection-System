@@ -6,7 +6,6 @@ import DataTable from "../components/DataTable";
 import ErrorCard from "../components/ErrorCard";
 import ImageCard from "../components/ImageCard";
 import PageSkeleton from "../components/PageSkeleton";
-import PageTitle from "../components/PageTitle";
 import { apiError, formatNumber, modelLabel } from "../utils/constants";
 
 const TABS = [
@@ -25,23 +24,6 @@ function badgeType(value) {
   return String(value || "")
     .toLowerCase()
     .replace(/\s+/g, "");
-}
-
-function IoCScoreBar({ score }) {
-  const value = Number(score);
-  if (Number.isNaN(value)) return "—";
-  const pct = Math.max(0, Math.min(100, value * 100));
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-24 rounded-full bg-slate-700">
-        <div
-          className="h-1.5 rounded-full bg-sky-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <span>{value.toFixed(2)}</span>
-    </div>
-  );
 }
 
 function buildTableData(tab, rows) {
@@ -76,7 +58,6 @@ function buildTableData(tab, rows) {
     "Threat Class": (
       <Badge type={badgeType(row.threat_class)}>{row.threat_class}</Badge>
     ),
-    "IoC Alignment Score": <IoCScoreBar score={row.ioc_alignment_score} />,
     "Top 10 Features": formatTop10Features(row.top10_features),
   }));
 }
@@ -129,7 +110,6 @@ export default function XaiQualityPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle>XAI Quality</PageTitle>
       <ErrorCard error={error} />
 
       <div className="rounded-2xl border border-slate-700 bg-slate-800 px-6 py-4 shadow-lg">

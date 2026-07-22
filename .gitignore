@@ -77,6 +77,18 @@ reports/timing.json
 # --- Large ML tensor dumps ---
 *.npy
 
+# --- Pipeline decision / provenance reports (regenerate each run) ---
+reports/balance_decisions.md
+reports/clean_decisions.md
+reports/preprocess_decisions.md
+reports/split_report.md
+reports/provenance.md
+reports/label_mapping.json
+reports/model_card.md
+
+# --- EDA outputs (JSON + plots; regenerate via eda step) ---
+reports/eda/
+
 # --- XAI figures (regenerate via explain-global / explain-local) ---
 # Keep reports/xai/quality/ for dissertation summaries (CSVs, MD, plots)
 reports/xai/global/
@@ -86,7 +98,6 @@ reports/xai/random_forest/
 reports/xai/xgboost/
 reports/xai/local_instance_selection.json
 
-# --- Training / evaluation plot PNGs (regenerate via pipeline / train_plots) ---
-reports/train/*_train_curve.png
-reports/train/*_cv_results_plot.png
-reports/evaluate/**/*.png
+# --- Training / evaluation outputs (regenerate via pipeline / train_plots) ---
+reports/train/
+reports/evaluate/

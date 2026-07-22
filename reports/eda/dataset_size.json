@@ -1,9 +1,0 @@
-{
-  "n_rows": 2574264,
-  "n_features_numeric": 77,
-  "n_features_categorical": 0,
-  "n_classes": 9,
-  "min_class_count": 11,
-  "max_class_count": 2148386,
-  "imbalance_ratio": 195307.81818181818
-}

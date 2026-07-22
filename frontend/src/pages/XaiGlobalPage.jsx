@@ -2,51 +2,19 @@ import { useEffect, useState } from "react";
 import { getXaiGlobal } from "../api/client";
 import ErrorCard from "../components/ErrorCard";
 import ImageCard from "../components/ImageCard";
-import PageTitle from "../components/PageTitle";
 import Select from "../components/Select";
 import { MODELS, PLOT_TYPES, apiError, modelLabel } from "../utils/constants";
 
 export default function XaiGlobalPage() {
-  const [model, setModel] = useState("");
-  const [plotType, setPlotType] = useState("");
+  const [model, setModel] = useState(MODELS[0]?.value ?? "");
+  const [plotType, setPlotType] = useState(PLOT_TYPES[0]?.value ?? "");
   const [error, setError] = useState(null);
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [selectedLoading, setSelectedLoading] = useState(false);
   const [allImages, setAllImages] = useState({
     beeswarm: null,
     bar: null,
     dependence: null,
   });
   const [allLoading, setAllLoading] = useState(false);
-
-  useEffect(() => {
-    if (!model || !plotType) {
-      setSelectedImage(null);
-      setSelectedLoading(false);
-      return undefined;
-    }
-
-    let cancelled = false;
-    setSelectedLoading(true);
-
-    getXaiGlobal(model, plotType)
-      .then((data) => {
-        if (!cancelled) setSelectedImage(data?.image ?? null);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setSelectedImage(null);
-          setError({ message: apiError(err) });
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setSelectedLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [model, plotType]);
 
   useEffect(() => {
     if (!model) {
@@ -82,13 +50,8 @@ export default function XaiGlobalPage() {
     };
   }, [model]);
 
-  const plotLabel =
-    PLOT_TYPES.find((p) => p.value === plotType)?.label ?? plotType;
-  const selectedTitle = `${modelLabel(model)} — ${plotLabel}`;
-
   return (
     <div className="space-y-6">
-      <PageTitle>XAI Global</PageTitle>
       <ErrorCard error={error} />
 
       <div className="flex flex-wrap gap-4">
@@ -96,7 +59,10 @@ export default function XaiGlobalPage() {
           id="global-model"
           label="Model"
           value={model}
-          onChange={(e) => setModel(e.target.value)}
+          onChange={(e) => {
+            setError(null);
+            setModel(e.target.value);
+          }}
           options={MODELS}
           className="min-w-[180px]"
         />
@@ -104,30 +70,36 @@ export default function XaiGlobalPage() {
           id="global-plot"
           label="Plot type"
           value={plotType}
-          onChange={(e) => setPlotType(e.target.value)}
+          onChange={(e) => {
+            setError(null);
+            setPlotType(e.target.value);
+          }}
           options={PLOT_TYPES}
           className="min-w-[180px]"
         />
       </div>
 
-      {model && plotType && (
-        <ImageCard
-          title={selectedTitle}
-          base64={selectedImage}
-          loading={selectedLoading}
-        />
-      )}
-
       {model && (
-        <div className="space-y-6">
-          {PLOT_TYPES.map((pt) => (
-            <ImageCard
-              key={pt.value}
-              title={pt.label}
-              base64={allImages[pt.value]}
-              loading={allLoading}
-            />
-          ))}
+        <div className="grid w-full grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-x-4 sm:gap-y-5">
+          {PLOT_TYPES.map((pt, index) => {
+            const title = `${modelLabel(model)} — ${pt.label}`;
+            const isSelected = plotType === pt.value;
+            const alignClass =
+              index % 2 === 0 ? "sm:justify-self-start" : "sm:justify-self-end";
+            return (
+              <ImageCard
+                key={pt.value}
+                title={title}
+                base64={allImages[pt.value]}
+                loading={allLoading}
+                className={`w-full max-w-md ${alignClass} ${
+                  isSelected
+                    ? "border-sky-400/60 ring-2 ring-sky-400/40"
+                    : ""
+                }`}
+              />
+            );
+          })}
         </div>
       )}
     </div>

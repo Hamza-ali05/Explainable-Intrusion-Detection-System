@@ -8,18 +8,18 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import {
   getPredictSamples,
   predictFile,
   predictSingle,
+  refreshPredictSample,
 } from "../api/client";
 import Badge from "../components/Badge";
 import Card from "../components/Card";
 import DataTable from "../components/DataTable";
 import ErrorCard from "../components/ErrorCard";
 import PageSkeleton from "../components/PageSkeleton";
-import PageTitle from "../components/PageTitle";
 import Select from "../components/Select";
 import { MODELS, THREAT_CLASSES, apiError } from "../utils/constants";
 
@@ -82,6 +82,7 @@ export default function PredictPage() {
   const [singleResult, setSingleResult] = useState(null);
   const [error, setError] = useState(null);
   const [samplesLoading, setSamplesLoading] = useState(true);
+  const [refreshingSample, setRefreshingSample] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -127,6 +128,21 @@ export default function PredictPage() {
       setError({ message: apiError(err) });
     } finally {
       setBatchLoading(false);
+    }
+  };
+
+  const handleRefreshSample = async () => {
+    if (!sampleType) return;
+    setRefreshingSample(true);
+    setError(null);
+    try {
+      const data = await refreshPredictSample(sampleType);
+      setFormValues({ ...data.features });
+      setSingleResult(null);
+    } catch (err) {
+      setError({ message: apiError(err) });
+    } finally {
+      setRefreshingSample(false);
     }
   };
 
@@ -193,7 +209,6 @@ export default function PredictPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle>Predict</PageTitle>
       <ErrorCard error={error} />
 
       <Card title="Batch Prediction from CSV">
@@ -265,14 +280,30 @@ export default function PredictPage() {
 
           {!samplesLoading && (
           <>
-          <Select
-            id="sample-type"
-            label="Sample Attack Type"
-            value={sampleType}
-            onChange={(e) => setSampleType(e.target.value)}
-            options={THREAT_CLASSES}
-            className="min-w-[200px]"
-          />
+          <div className="flex flex-wrap items-end gap-3">
+            <Select
+              id="sample-type"
+              label="Sample Attack Type"
+              value={sampleType}
+              onChange={(e) => setSampleType(e.target.value)}
+              options={THREAT_CLASSES}
+              className="min-w-[200px]"
+            />
+
+            <button
+              type="button"
+              onClick={handleRefreshSample}
+              disabled={!sampleType || refreshingSample}
+              className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800 px-4 py-2 text-sm font-medium text-slate-100 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {refreshingSample ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              Refresh sample values
+            </button>
+          </div>
 
           {sampleType && featureKeys.length > 0 && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">

@@ -6,6 +6,7 @@ export default function Card({
   children,
   defaultOpen = true,
   className = "",
+  contentClassName = "",
   actions = null,
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -51,7 +52,7 @@ export default function Card({
         }`}
       >
         <div className="overflow-hidden">
-          <div className="px-6 pb-6">{children}</div>
+          <div className={`px-6 pb-6 ${contentClassName}`}>{children}</div>
         </div>
       </div>
     </div>

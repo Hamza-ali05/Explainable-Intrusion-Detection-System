@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import shutil
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -180,10 +181,31 @@ def _atomic_write(target_path: Path, write_cb: Callable[[Path], None]) -> Path:
     """Write to a sibling `.tmp` file then atomically rename into place."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = target_path.with_name(target_path.name + ".tmp")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    write_cb(tmp_path)
-    tmp_path.replace(target_path)
+    tmp_path.unlink(missing_ok=True)
+    try:
+        write_cb(tmp_path)
+        if not tmp_path.exists():
+            raise FileNotFoundError(f"Temporary write did not produce: {tmp_path}")
+        tmp_path.replace(target_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    return target_path
+
+
+def atomic_copy(src_path: Path, target_path: Path) -> Path:
+    """Copy a file via a sibling `.tmp` file then atomically rename into place."""
+    if not src_path.exists():
+        raise FileNotFoundError(f"Source file not found: {src_path}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(target_path.name + ".tmp")
+    tmp_path.unlink(missing_ok=True)
+    try:
+        shutil.copy2(src_path, tmp_path)
+        tmp_path.replace(target_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
     return target_path
 
 
@@ -265,6 +287,7 @@ def mark_done(
 
 
 def _load_one_output(path: Path) -> Any:
+    """Reload a checkpointed artifact. Binary files return their path string."""
     suffix = path.suffix.lower()
     if suffix == ".parquet":
         return read_parquet(path)
@@ -276,7 +299,14 @@ def _load_one_output(path: Path) -> Any:
         return read_yaml(path)
     if suffix in {".pkl", ".joblib"}:
         return read_joblib(path)
-    return path.read_text(encoding="utf-8")
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".pdf", ".npy", ".npz"}:
+        return str(path)
+    if suffix in {".md", ".txt"}:
+        return path.read_text(encoding="utf-8")
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return str(path)
 
 
 def load_outputs(payload: dict[str, Any]) -> dict[str, Any]:

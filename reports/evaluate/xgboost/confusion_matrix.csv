@@ -1,9 +1,0 @@
-,BENIGN,Botnet,BruteForce,DDoS,DoS,Infiltration,PortScan,WebAttack
-BENIGN,321981,49,0,0,90,0,135,3
-Botnet,66,227,0,0,0,0,0,0
-BruteForce,6,0,1366,0,0,0,0,1
-DDoS,4,0,0,19199,0,0,0,0
-DoS,31,0,0,0,29028,0,2,1
-Infiltration,1,0,0,0,0,5,0,0
-PortScan,2,0,0,0,4,0,13616,1
-WebAttack,12,0,0,0,1,0,0,308

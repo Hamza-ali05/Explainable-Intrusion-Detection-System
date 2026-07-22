@@ -9,7 +9,7 @@ export default {
         sans: ["Inter", "system-ui", "sans-serif"],
       },
       colors: {
-        page: "#0f172a",
+        page: "#1e1b4b",
         panel: "#1e293b",
         elevated: "#334155",
         accent: {

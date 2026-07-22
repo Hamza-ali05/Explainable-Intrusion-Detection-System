@@ -46,6 +46,7 @@ from src.core import (
     RANDOM_SEED,
     REPORTS_DIR,
     THREAT_CLASSES,
+    atomic_copy,
     checkpoint_path,
     checkpointed,
     compute_input_hash,
@@ -94,6 +95,7 @@ MODEL_SUBSAMPLE_MAX: dict[str, int] = {
     "random_forest": 50_000,
     "xgboost": 100_000,
 }
+PERMUTATION_IMPORTANCE_MAX_ROWS = 10_000
 
 IDENTIFYING_COLUMNS = {
     "flow id",
@@ -162,6 +164,7 @@ class _InferenceCache:
     imputation_maps: dict[str, Any] | None = None
     feature_names: list[str] | None = None
     classes_: list[str] | None = None
+    bundle_mismatch: bool = False
 
 
 _CACHE = _InferenceCache()
@@ -853,7 +856,8 @@ def _save_confusion_artifacts(
     cm_df.to_csv(csv_path)
 
     row_sums = cm.sum(axis=1, keepdims=True)
-    row_norm = np.divide(cm, row_sums, where=row_sums != 0)
+    row_norm = np.zeros_like(cm, dtype=float)
+    np.divide(cm, row_sums, out=row_norm, where=row_sums != 0)
     norm_df = pd.DataFrame(row_norm, index=classes, columns=classes)
     norm_path = out_dir / "confusion_matrix_row_normalized.csv"
     norm_df.to_csv(norm_path)
@@ -975,13 +979,23 @@ def _evaluate_one_model(
 
     perm_path = out_dir / "permutation_importance_val.csv"
     try:
+        if len(X_val) > PERMUTATION_IMPORTANCE_MAX_ROWS:
+            rng = np.random.default_rng(RANDOM_SEED)
+            idx = rng.choice(len(X_val), size=PERMUTATION_IMPORTANCE_MAX_ROWS, replace=False)
+            X_perm = X_val.iloc[idx]
+            y_perm = y_val.iloc[idx] if hasattr(y_val, "iloc") else y_val[idx]
+            perm_jobs = 1
+        else:
+            X_perm = X_val
+            y_perm = y_val
+            perm_jobs = -1
         perm = permutation_importance(
             model,
-            X_val,
-            y_val,
+            X_perm,
+            y_perm,
             n_repeats=5,
             random_state=RANDOM_SEED,
-            n_jobs=-1,
+            n_jobs=perm_jobs,
             scoring="f1_macro",
         )
         perm_df = pd.DataFrame(
@@ -1133,9 +1147,7 @@ def evaluate(params: dict[str, Any] | None = None) -> dict[str, Any]:
     _write_markdown(final_lb_path, lb_lines)
     all_output_paths.append(str(final_lb_path))
 
-    winner_path = MODELS_DIR / f"{winner}.joblib"
-    write_joblib(read_joblib(winner_path), BEST_MODEL_PATH)
-    write_json({"best_model": winner, "metric": "f1_macro", "test_f1_macro": results[0]["f1_macro"]}, BEST_MODEL_META_PATH)
+    _materialize_best_model(winner, results[0]["f1_macro"])
     all_output_paths.extend([str(BEST_MODEL_PATH), str(BEST_MODEL_META_PATH)])
 
     model_card_path = _write_model_card(winner, results)
@@ -1151,6 +1163,50 @@ def evaluate(params: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 # --- inference / PREDICT ---
+def _model_feature_names(model: Any) -> list[str] | None:
+    """Return feature column names stored on the fitted estimator, if any."""
+    tree = tree_model_for_shap(model)
+    names = getattr(tree, "feature_names_in_", None)
+    if names is None:
+        return None
+    return [str(name) for name in names]
+
+
+def _bundle_matches_model(bundle: dict[str, Any], model_features: list[str] | None) -> bool:
+    if not model_features:
+        return True
+    bundle_features = [str(name) for name in bundle.get("feature_names", [])]
+    return bundle_features == model_features
+
+
+def _column_overlap(columns: list[str], expected: list[str]) -> int:
+    col_set = set(columns)
+    return sum(1 for name in expected if name in col_set)
+
+
+def _should_use_shared_schema_projection(
+    df: pd.DataFrame,
+    expected_features: list[str] | None,
+) -> bool:
+    """Down-project to the integrated schema only when the model was trained on it."""
+    from src.data import SHARED_FEATURE_COLUMNS, SUPPORTED_DATASET_TYPES, _detect_dataset_type
+
+    cols = [str(c) for c in df.columns]
+    has_shared = sum(1 for c in SHARED_FEATURE_COLUMNS if c in cols) >= 3
+    if has_shared:
+        return False
+
+    if expected_features:
+        overlap = _column_overlap(cols, expected_features)
+        if overlap >= max(3, int(0.15 * len(expected_features))):
+            return False
+        if set(expected_features) <= set(SHARED_FEATURE_COLUMNS):
+            return True
+
+    detected = _detect_dataset_type(Path("upload.csv"), cols)
+    return detected in SUPPORTED_DATASET_TYPES
+
+
 def _normalize_col(name: str) -> str:
     return re.sub(r"[\s_\-]+", " ", str(name).strip().lower())
 
@@ -1185,8 +1241,92 @@ def _build_imputation_maps(train_df: pd.DataFrame, bundle: dict[str, Any]) -> di
     return maps
 
 
+def _winner_from_evaluate_metrics() -> tuple[str, float] | None:
+    """Pick the best model from per-model evaluate metrics when best_model.json is absent."""
+    best_name: str | None = None
+    best_f1 = float("-inf")
+    for name in MODEL_NAMES:
+        metrics_path = EVAL_REPORTS_DIR / name / "metrics.json"
+        if not metrics_path.exists():
+            continue
+        metrics = read_json(metrics_path)
+        f1_macro = metrics.get("f1", {}).get("macro")
+        if f1_macro is None:
+            continue
+        if float(f1_macro) > best_f1:
+            best_f1 = float(f1_macro)
+            best_name = name
+    if best_name is None:
+        return None
+    return best_name, best_f1
+
+
+def _materialize_best_model(winner: str, test_f1_macro: float | None = None) -> Path:
+    """Copy the winning model artifact to artifacts/models/best_model.joblib."""
+    winner_path = MODELS_DIR / f"{winner}.joblib"
+    if not winner_path.exists():
+        raise FileNotFoundError(f"Model not found: {winner_path}")
+    atomic_copy(winner_path, BEST_MODEL_PATH)
+    if test_f1_macro is None:
+        metrics_path = EVAL_REPORTS_DIR / winner / "metrics.json"
+        if metrics_path.exists():
+            metrics = read_json(metrics_path)
+            test_f1_macro = metrics.get("f1", {}).get("macro")
+    write_json(
+        {
+            "best_model": winner,
+            "metric": "f1_macro",
+            "test_f1_macro": test_f1_macro,
+        },
+        BEST_MODEL_META_PATH,
+    )
+    return BEST_MODEL_PATH
+
+
+def _resolve_inference_model_path(model_path: Path | None = None) -> Path:
+    """Resolve a model artifact for inference, with fallbacks when best_model.joblib is missing."""
+    if model_path is not None:
+        path = Path(model_path)
+        if path.exists():
+            return path
+        if path != BEST_MODEL_PATH:
+            raise FileNotFoundError(f"Model not found: {path}")
+
+    if BEST_MODEL_PATH.exists():
+        return BEST_MODEL_PATH
+
+    if BEST_MODEL_META_PATH.exists():
+        meta = read_json(BEST_MODEL_META_PATH)
+        winner = meta.get("best_model")
+        if winner:
+            candidate = MODELS_DIR / f"{winner}.joblib"
+            if candidate.exists():
+                return candidate
+
+    winner_metrics = _winner_from_evaluate_metrics()
+    if winner_metrics is not None:
+        winner, test_f1_macro = winner_metrics
+        candidate = MODELS_DIR / f"{winner}.joblib"
+        if candidate.exists():
+            LOGGER.warning(
+                "best_model.joblib missing; using evaluate winner %s (test macro-F1=%.4f)",
+                winner,
+                test_f1_macro,
+            )
+            _materialize_best_model(winner, test_f1_macro)
+            return BEST_MODEL_PATH
+
+    for name in MODEL_NAMES:
+        candidate = MODELS_DIR / f"{name}.joblib"
+        if candidate.exists():
+            LOGGER.warning("best_model.joblib missing; falling back to %s", name)
+            return candidate
+
+    raise FileNotFoundError(f"Model not found: {BEST_MODEL_PATH}")
+
+
 def _load_inference_context(model_path: Path | None = None) -> None:
-    resolved_model_path = Path(model_path or BEST_MODEL_PATH)
+    resolved_model_path = _resolve_inference_model_path(model_path)
     if (
         _CACHE.model is not None
         and _CACHE.model_path == resolved_model_path
@@ -1196,8 +1336,6 @@ def _load_inference_context(model_path: Path | None = None) -> None:
 
     if not PREPROCESS_BUNDLE_PATH.exists():
         raise FileNotFoundError(f"Preprocess bundle not found: {PREPROCESS_BUNDLE_PATH}")
-    if not resolved_model_path.exists():
-        raise FileNotFoundError(f"Model not found: {resolved_model_path}")
 
     bundle = read_joblib(PREPROCESS_BUNDLE_PATH)
     splits = _load_splits()
@@ -1210,20 +1348,31 @@ def _load_inference_context(model_path: Path | None = None) -> None:
         unscaled = read_parquet(TABULAR_UNSCALED_PARQUET)
         train_df = unscaled.iloc[splits["train"]]
 
-    imputation_maps = _build_imputation_maps(train_df, bundle)
     model = read_joblib(resolved_model_path)
+    model_features = _model_feature_names(model)
+    bundle_features = [str(name) for name in bundle["feature_names"]]
+    bundle_mismatch = model_features is not None and not _bundle_matches_model(bundle, model_features)
+
+    imputation_maps = _build_imputation_maps(train_df, bundle)
+    if bundle_mismatch:
+        LOGGER.warning(
+            "Preprocess bundle features (%d) do not match model features (%d); "
+            "using direct column alignment for inference.",
+            len(bundle_features),
+            len(model_features or []),
+        )
 
     _CACHE.model = model
     _CACHE.model_path = resolved_model_path
     _CACHE.bundle = bundle
     _CACHE.imputation_maps = imputation_maps
-    _CACHE.feature_names = list(bundle["feature_names"])
+    _CACHE.feature_names = model_features or bundle_features
+    _CACHE.bundle_mismatch = bundle_mismatch
     _CACHE.classes_ = [str(c) for c in getattr(model, "classes_", [])]
 
 
 def _prepare_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     from src.data import (
-        SHARED_FEATURE_COLUMNS,
         SUPPORTED_DATASET_TYPES,
         _detect_dataset_type,
         _project_to_shared_schema,
@@ -1231,8 +1380,7 @@ def _prepare_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     out = _sanitize_columns(df.copy())
     cols = [str(c) for c in out.columns]
-    has_shared = sum(1 for c in SHARED_FEATURE_COLUMNS if c in out.columns) >= 3
-    if not has_shared:
+    if _should_use_shared_schema_projection(out, _CACHE.feature_names):
         detected = _detect_dataset_type(Path("upload.csv"), cols)
         if detected in SUPPORTED_DATASET_TYPES:
             out = _project_to_shared_schema(out, detected, "upload")
@@ -1257,9 +1405,33 @@ def _prepare_raw_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _encode_features_direct(df: pd.DataFrame) -> pd.DataFrame:
+    """Align raw feature columns to the model's expected schema (no preprocess bundle)."""
+    if _CACHE.feature_names is None:
+        raise RuntimeError("Inference cache not initialized.")
+
+    expected = _CACHE.feature_names
+    features = pd.DataFrame(index=df.index)
+    for col in expected:
+        if col in df.columns:
+            features[col] = pd.to_numeric(df[col], errors="coerce")
+        else:
+            features[col] = np.nan
+
+    maps = _CACHE.imputation_maps or {}
+    for col, spec in maps.get("numeric", {}).items():
+        if col in features.columns:
+            features[col] = _treat_as_missing(features[col]).fillna(spec["value"])
+
+    return features.reindex(columns=expected, fill_value=0.0)
+
+
 def _encode_features(df: pd.DataFrame) -> pd.DataFrame:
     if _CACHE.bundle is None or _CACHE.imputation_maps is None or _CACHE.feature_names is None:
         raise RuntimeError("Inference cache not initialized.")
+
+    if _CACHE.bundle_mismatch:
+        return _encode_features_direct(df)
 
     bundle = _CACHE.bundle
     maps = _CACHE.imputation_maps
@@ -1300,7 +1472,7 @@ def predict_from_dataframe(
     audit: bool = True,
 ) -> pd.DataFrame:
     """Apply saved preprocessors and predict; returns labels, probabilities, and confidence."""
-    _load_inference_context(Path(model_path) if model_path else None)
+    _load_inference_context(Path(model_path) if model_path is not None else None)
 
     raw = _prepare_raw_dataframe(df)
     id_cols = _identifying_columns_present(df)
@@ -1367,7 +1539,8 @@ def predict_step(params: dict[str, Any] | None = None) -> dict[str, Any]:
     unscaled_path: Path = Path(params.get("unscaled_path", TABULAR_UNSCALED_PARQUET))
     splits = _load_splits()
     df = read_parquet(unscaled_path).iloc[splits["test"]]
-    result = predict_from_dataframe(df, audit=True)
+    model_path = _resolve_inference_model_path(None)
+    result = predict_from_dataframe(df, model_path=model_path, audit=True)
     out_path = PREDICTIONS_DIR / "test_predictions.parquet"
     write_parquet(result, out_path)
     return {"output_paths": [str(out_path)], "n_predictions": int(len(result))}

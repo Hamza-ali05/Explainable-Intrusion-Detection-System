@@ -37,6 +37,12 @@ export const toImageSrc = (base64) => {
   return `data:image/png;base64,${raw}`;
 };
 
+export const formatPipelineStep = (step) => {
+  if (!step) return "";
+  const label = String(step).replace(/-/g, " ");
+  return label.charAt(0).toUpperCase() + label.slice(1);
+};
+
 export const formatTimestamp = (ts) => {
   if (!ts) return "—";
   try {

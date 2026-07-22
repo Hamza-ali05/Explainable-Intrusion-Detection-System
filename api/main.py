@@ -5,6 +5,7 @@ import csv
 import io
 import json
 import os
+import random
 import sys
 import threading
 import traceback
@@ -343,29 +344,72 @@ def _hand_coded_predict_samples() -> dict[str, dict[str, Any]]:
     }
 
 
-def _load_predict_samples() -> dict[str, dict[str, Any]]:
+def _predict_sample_pool() -> dict[str, list[dict[str, Any]]]:
+    """All feature dicts per threat class from data/manual/example_flows.csv."""
     from src.data import _standardize_label_text
     from src.prep import map_threat_class
 
-    samples: dict[str, dict[str, Any]] = {}
+    pool: dict[str, list[dict[str, Any]]] = {threat_class: [] for threat_class in THREAT_CLASSES}
     example_path = MANUAL_DIR / "example_flows.csv"
-    if example_path.exists():
-        df = pd.read_csv(example_path, low_memory=False)
-        df.columns = [str(c).strip() for c in df.columns]
-        label_col = next(
-            (c for c in df.columns if str(c).strip().lower() == "label"),
-            None,
-        )
-        if label_col is not None:
-            for _, row in df.iterrows():
-                threat_class = map_threat_class(_standardize_label_text(row[label_col]))
-                if threat_class in THREAT_CLASSES and threat_class not in samples:
-                    samples[threat_class] = _series_to_feature_dict(row)
+    if not example_path.exists():
+        return pool
 
+    df = pd.read_csv(example_path, low_memory=False)
+    df.columns = [str(c).strip() for c in df.columns]
+    label_col = next(
+        (c for c in df.columns if str(c).strip().lower() == "label"),
+        None,
+    )
+    if label_col is None:
+        return pool
+
+    for _, row in df.iterrows():
+        threat_class = map_threat_class(_standardize_label_text(row[label_col]))
+        if threat_class in THREAT_CLASSES:
+            pool[threat_class].append(_series_to_feature_dict(row))
+    return pool
+
+
+def _jitter_predict_sample(
+    base: dict[str, Any],
+    rng: random.Random,
+) -> dict[str, Any]:
+    """Apply light random variation to numeric hand-coded sample values."""
+    out: dict[str, Any] = {}
+    for key, value in base.items():
+        if isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, int) and not isinstance(value, bool):
+            scale = rng.uniform(0.75, 1.25)
+            next_value = int(round(value * scale))
+            out[key] = max(0, next_value)
+        elif isinstance(value, float):
+            scale = rng.uniform(0.75, 1.25)
+            out[key] = float(value * scale)
+        else:
+            out[key] = value
+    return out
+
+
+def _refresh_predict_sample(threat_class: str) -> dict[str, Any]:
+    """Return a random feature dict for the given threat class."""
+    pool = _predict_sample_pool().get(threat_class, [])
+    if pool:
+        return dict(random.choice(pool))
+
+    fallback = _hand_coded_predict_samples().get(threat_class)
+    if fallback is None:
+        raise ValueError(f"Unknown threat class: {threat_class}")
+    return _jitter_predict_sample(fallback, random.Random())
+
+
+def _load_predict_samples() -> dict[str, dict[str, Any]]:
+    pool = _predict_sample_pool()
     fallback = _hand_coded_predict_samples()
+    samples: dict[str, dict[str, Any]] = {}
     for threat_class in THREAT_CLASSES:
-        if threat_class not in samples:
-            samples[threat_class] = fallback[threat_class]
+        rows = pool.get(threat_class, [])
+        samples[threat_class] = rows[0] if rows else fallback[threat_class]
     return samples
 
 
@@ -552,6 +596,20 @@ def api_xai_quality(metric: QualityMetric) -> dict[str, Any]:
 def api_predict_samples() -> dict[str, dict[str, Any]]:
     """One feature dict per threat class from data/manual/example_flows.csv."""
     return _load_predict_samples()
+
+
+@app.get("/api/predict/samples/refresh")
+def api_refresh_predict_sample(
+    threat_class: str = Query(..., description="Threat class to sample"),
+) -> dict[str, Any]:
+    """Return a random feature dict for one threat class."""
+    if threat_class not in THREAT_CLASSES:
+        raise HTTPException(status_code=400, detail=f"Unknown threat class: {threat_class}")
+    try:
+        features = _refresh_predict_sample(threat_class)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"threat_class": threat_class, "features": features}
 
 
 @app.post("/api/predict/single")

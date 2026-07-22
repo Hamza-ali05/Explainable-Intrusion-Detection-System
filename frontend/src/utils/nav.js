@@ -5,7 +5,6 @@ export const NAV_LINKS = [
   { to: "/xai/local", label: "XAI Local" },
   { to: "/xai/quality", label: "XAI Quality" },
   { to: "/predict", label: "Predict" },
-  { to: "/reports", label: "Reports" },
 ];
 
 export function isNavActive(pathname, to) {

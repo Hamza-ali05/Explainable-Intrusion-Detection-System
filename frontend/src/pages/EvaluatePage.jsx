@@ -6,7 +6,6 @@ import DataTable from "../components/DataTable";
 import ErrorCard from "../components/ErrorCard";
 import ImageCard from "../components/ImageCard";
 import PageSkeleton from "../components/PageSkeleton";
-import PageTitle from "../components/PageTitle";
 import Select from "../components/Select";
 import {
   MODELS,
@@ -169,7 +168,6 @@ export default function EvaluatePage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle>Evaluate</PageTitle>
       <ErrorCard error={error} />
 
       {loading ? (
