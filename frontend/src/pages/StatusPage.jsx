@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   getPipelineState,
@@ -18,6 +18,7 @@ export default function StatusPage() {
   const [error, setError] = useState(null);
   const [loadingStep, setLoadingStep] = useState(null);
   const [polling, setPolling] = useState(false);
+  const runInFlightRef = useRef(false);
 
   const fetchStatus = useCallback(async () => {
     const data = await getStatus();
@@ -50,10 +51,14 @@ export default function StatusPage() {
         const [statusRows, state] = await Promise.all([getStatus(), getPipelineState()]);
         setSteps(statusRows);
 
-        const allDone = statusRows.length > 0 && statusRows.every((s) => s.done);
-        if (allDone || !state.running) {
+        // Only stop when the API reports idle — previous checkpoints can
+        // already look "all done" while a new run is still in progress.
+        if (!state.running) {
           setPolling(false);
           setLoadingStep(null);
+          runInFlightRef.current = false;
+        } else if (state.step) {
+          setLoadingStep(state.step);
         }
       } catch {
         /* keep polling */
@@ -66,6 +71,8 @@ export default function StatusPage() {
   }, [polling]);
 
   const handleRun = async (step) => {
+    if (runInFlightRef.current || loadingStep !== null) return;
+    runInFlightRef.current = true;
     setLoadingStep(step);
     setPolling(true);
     setError(null);
@@ -73,9 +80,22 @@ export default function StatusPage() {
       await runPipeline(step);
       await fetchStatus();
     } catch (err) {
+      // 409 = pipeline already running — keep monitoring instead of failing.
+      if (err?.response?.status === 409) {
+        try {
+          const state = await getPipelineState();
+          setLoadingStep(state.step || step);
+          setPolling(true);
+        } catch {
+          setPolling(true);
+        }
+        return;
+      }
       setPolling(false);
       setLoadingStep(null);
       setError({ message: apiError(err) });
+    } finally {
+      runInFlightRef.current = false;
     }
   };
 
