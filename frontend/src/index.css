@@ -1,7 +1,88 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg-page: #0f172a;
+  --bg-panel: #1e293b;
+  --bg-elevated: #334155;
+  --accent-primary: #38bdf8;
+  --accent-success: #4ade80;
+  --accent-danger: #f87171;
+  --accent-warning: #fbbf24;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --border: #334155;
+}
+
 body {
-  @apply bg-white text-gray-900 antialiased;
+  font-family: "Inter", system-ui, sans-serif;
+  background-color: #0f172a;
+  color: var(--text-primary);
+  min-height: 100vh;
+  @apply antialiased;
+}
+
+@layer components {
+  .ui-page-title {
+    @apply text-2xl font-semibold text-slate-100;
+  }
+
+  .ui-section-heading {
+    @apply text-lg font-medium text-slate-200;
+  }
+
+  .ui-body {
+    @apply text-sm text-slate-300;
+  }
+
+  .ui-card {
+    @apply bg-slate-800 rounded-2xl border border-slate-700 shadow-lg p-6;
+  }
+
+  .ui-card-image {
+    @apply w-full rounded-xl border border-slate-700;
+  }
+
+  .ui-select {
+    @apply bg-slate-700 border border-slate-600 text-slate-100 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500;
+  }
+
+  .ui-btn-primary {
+    @apply bg-sky-500 hover:bg-sky-400 text-white font-medium rounded-lg px-4 py-2 text-sm transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .ui-btn-secondary {
+    @apply bg-slate-700 hover:bg-slate-600 text-slate-100 rounded-lg px-4 py-2 text-sm transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .ui-btn-danger {
+    @apply bg-red-600 hover:bg-red-500 text-white rounded-lg px-4 py-2 text-sm transition disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .ui-table {
+    @apply w-full border-collapse text-left text-sm;
+  }
+
+  .ui-table th {
+    @apply bg-slate-700 px-4 py-2 text-xs uppercase tracking-wider text-slate-400;
+  }
+
+  .ui-table td {
+    @apply border-b border-slate-700 px-4 py-2 text-slate-300;
+  }
+
+  .ui-table tbody tr:nth-child(even) {
+    @apply bg-slate-800/50;
+  }
+
+  .ui-label {
+    @apply text-sm text-slate-400;
+  }
+
+  .ui-mono {
+    @apply font-mono text-xs text-slate-300;
+  }
 }

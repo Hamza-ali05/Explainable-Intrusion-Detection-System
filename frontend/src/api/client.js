@@ -7,7 +7,9 @@ const api = axios.create({
 export default api;
 
 export const getStatus = () => api.get("/status").then((r) => r.data);
-export const runPipeline = (step) => api.post("/pipeline/run", { step }).then((r) => r.data);
+export const getPipelineState = () => api.get("/pipeline/state").then((r) => r.data);
+export const runPipeline = (step, force = false) =>
+  api.post("/pipeline/run", { step, force }).then((r) => r.data);
 export const getPipelineLog = () => api.get("/pipeline/log").then((r) => r.data);
 
 export const getLeaderboard = () => api.get("/evaluate/leaderboard").then((r) => r.data);
@@ -24,6 +26,11 @@ export const getXaiLocalImage = (params) =>
 export const getXaiQuality = (metric) =>
   api.get("/xai/quality", { params: { metric } }).then((r) => r.data);
 
+export const getPredictSamples = () => api.get("/predict/samples").then((r) => r.data);
+
+export const predictSingle = (model, features) =>
+  api.post("/predict/single", { model, features }).then((r) => r.data);
+
 export const predictFile = (file, model) => {
   const form = new FormData();
   form.append("file", file);
@@ -31,6 +38,17 @@ export const predictFile = (file, model) => {
   return api.post("/predict", form).then((r) => r.data);
 };
 
+export const predictDemo = (model) => {
+  const form = new FormData();
+  form.append("model", model);
+  return api.post("/predict/demo", form).then((r) => r.data);
+};
+
+export const explainRow = (model, row) =>
+  api.post("/predict/explain", { model, row }).then((r) => r.data);
+
 export const getReports = () => api.get("/reports").then((r) => r.data);
 export const getReportFile = (path) =>
   api.get("/reports/file", { params: { path } }).then((r) => r.data);
+
+export const getGoogleAlerts = () => api.get("/google/alerts").then((r) => r.data);

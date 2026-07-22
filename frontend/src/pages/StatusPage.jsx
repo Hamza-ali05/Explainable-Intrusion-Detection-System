@@ -1,15 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getPipelineLog, getStatus, runPipeline } from "../api/client";
+import { useOutletContext } from "react-router-dom";
+import { Loader2 } from "lucide-react";
+import {
+  getGoogleAlerts,
+  getPipelineLog,
+  getPipelineState,
+  getStatus,
+  runPipeline,
+} from "../api/client";
 import Badge from "../components/Badge";
-import LoadingSpinner from "../components/LoadingSpinner";
-import { formatTimestamp } from "../utils/constants";
+import Card from "../components/Card";
+import DataTable from "../components/DataTable";
+import ErrorCard from "../components/ErrorCard";
+import PageSkeleton from "../components/PageSkeleton";
+import PageTitle from "../components/PageTitle";
+import { apiError, formatTimestamp } from "../utils/constants";
 
 export default function StatusPage() {
+  const { liveAlertsEnabled } = useOutletContext() || {};
+
   const [steps, setSteps] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [runningStep, setRunningStep] = useState(null);
+  const [error, setError] = useState(null);
+  const [loadingStep, setLoadingStep] = useState(null);
   const [polling, setPolling] = useState(false);
   const [logLines, setLogLines] = useState([]);
+  const [alerts, setAlerts] = useState(null);
+  const [alertsError, setAlertsError] = useState(false);
   const logRef = useRef(null);
 
   const fetchStatus = useCallback(async () => {
@@ -19,23 +36,47 @@ export default function StatusPage() {
   }, []);
 
   useEffect(() => {
-    fetchStatus().finally(() => setLoading(false));
-  }, [fetchStatus]);
+    (async () => {
+      try {
+        const [statusRows, state] = await Promise.all([getStatus(), getPipelineState()]);
+        setSteps(statusRows);
+        if (state.running) {
+          setLoadingStep(state.step || "all");
+          setPolling(true);
+        }
+      } catch (err) {
+        setError({ message: apiError(err) });
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     if (!polling) return undefined;
 
-    const pollLog = async () => {
+    const tick = async () => {
       try {
-        const { lines } = await getPipelineLog();
-        setLogLines(lines.slice(-50));
+        const [{ lines }, statusRows, state] = await Promise.all([
+          getPipelineLog(),
+          getStatus(),
+          getPipelineState(),
+        ]);
+        setLogLines((lines || []).slice(-50));
+        setSteps(statusRows);
+
+        const allDone = statusRows.length > 0 && statusRows.every((s) => s.done);
+        if (allDone || !state.running) {
+          setPolling(false);
+          setLoadingStep(null);
+        }
       } catch {
-        /* ignore */
+        /* keep polling */
       }
     };
 
-    pollLog();
-    const id = setInterval(pollLog, 3000);
+    tick();
+    const id = setInterval(tick, 3000);
     return () => clearInterval(id);
   }, [polling]);
 
@@ -46,105 +87,141 @@ export default function StatusPage() {
   }, [logLines]);
 
   useEffect(() => {
-    if (!polling || !runningStep) return undefined;
+    if (!liveAlertsEnabled) {
+      setAlerts(null);
+      setAlertsError(false);
+      return undefined;
+    }
 
-    const checkDone = async () => {
-      const data = await fetchStatus();
-      if (runningStep === "all") {
-        if (data.every((s) => s.done)) {
-          setPolling(false);
-          setRunningStep(null);
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await getGoogleAlerts();
+        if (!cancelled) {
+          setAlerts(data?.alerts || []);
+          setAlertsError(false);
         }
-      } else {
-        const row = data.find((s) => s.step === runningStep);
-        if (row?.done) {
-          setPolling(false);
-          setRunningStep(null);
+      } catch (err) {
+        if (!cancelled) {
+          setAlerts(null);
+          setAlertsError(true);
         }
       }
-    };
+    })();
 
-    const id = setInterval(checkDone, 3000);
-    return () => clearInterval(id);
-  }, [polling, runningStep, fetchStatus]);
+    return () => {
+      cancelled = true;
+    };
+  }, [liveAlertsEnabled]);
 
   const handleRun = async (step) => {
-    setRunningStep(step);
+    setLoadingStep(step);
     setPolling(true);
+    setError(null);
     try {
       await runPipeline(step);
       await fetchStatus();
     } catch (err) {
       setPolling(false);
-      setRunningStep(null);
-      alert(err.response?.data?.detail ?? err.message);
+      setLoadingStep(null);
+      setError({ message: apiError(err) });
     }
   };
 
-  if (loading) return <LoadingSpinner />;
-
-  return (
-    <div>
-      <div className="mb-4 flex items-center justify-between">
-        <h1 className="text-lg font-medium">Pipeline Status</h1>
+  const statusTableData = steps.map((row) => {
+    const isLoading = loadingStep === row.step || (loadingStep === "all" && !row.done);
+    return {
+      Step: row.step,
+      Status: (
+        <Badge type={row.done ? "done" : "pending"}>
+          {row.done ? "Done" : "Pending"}
+        </Badge>
+      ),
+      Timestamp: formatTimestamp(row.timestamp),
+      Action: row.done ? (
+        "—"
+      ) : isLoading ? (
+        <Loader2 className="h-4 w-4 animate-spin text-sky-400" aria-label="Running" />
+      ) : (
         <button
           type="button"
-          onClick={() => handleRun("all")}
-          disabled={runningStep !== null}
-          className="rounded border border-gray-400 px-3 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
+          onClick={() => handleRun(row.step)}
+          disabled={loadingStep !== null}
+          className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-medium text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Run Full Pipeline
+          Run
         </button>
-      </div>
+      ),
+    };
+  });
 
-      <table className="w-full border-collapse text-sm">
-        <thead>
-          <tr className="border-b border-gray-300 text-left">
-            <th className="py-2 pr-4">Step</th>
-            <th className="py-2 pr-4">Status</th>
-            <th className="py-2 pr-4">Timestamp</th>
-            <th className="py-2">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {steps.map((row) => (
-            <tr key={row.step} className="border-b border-gray-200">
-              <td className="py-2 pr-4 font-mono">{row.step}</td>
-              <td className="py-2 pr-4">
-                {runningStep === row.step || (runningStep === "all" && !row.done) ? (
-                  <LoadingSpinner label="Running…" />
-                ) : (
-                  <Badge done={row.done} />
-                )}
-              </td>
-              <td className="py-2 pr-4">{formatTimestamp(row.timestamp)}</td>
-              <td className="py-2">
-                {!row.done && (
-                  <button
-                    type="button"
-                    onClick={() => handleRun(row.step)}
-                    disabled={runningStep !== null}
-                    className="rounded border border-gray-400 px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-50"
-                  >
-                    Run
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+  const alertsTableData =
+    alerts?.map((alert) => ({
+      Severity: (
+        <Badge type={String(alert.severity || "").toLowerCase()}>
+          {alert.severity}
+        </Badge>
+      ),
+      Type: alert.type,
+      Timestamp: formatTimestamp(alert.timestamp),
+      Detail: alert.detail,
+    })) || [];
 
-      {(polling || logLines.length > 0) && (
-        <div className="mt-6">
-          <h2 className="mb-2 text-sm font-medium">Pipeline Log</h2>
-          <pre
-            ref={logRef}
-            className="max-h-64 overflow-auto rounded border border-gray-300 bg-gray-50 p-3 font-mono text-xs"
+  return (
+    <div className="space-y-6">
+      <PageTitle>Status</PageTitle>
+      <ErrorCard error={error} />
+
+      {loading ? (
+        <PageSkeleton />
+      ) : (
+        <>
+      <Card
+        title="Pipeline Status"
+        actions={
+          <button
+            type="button"
+            onClick={() => handleRun("all")}
+            disabled={loadingStep !== null}
+            className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {logLines.join("\n") || "Waiting for log output…"}
-          </pre>
+            {loadingStep === "all" ? (
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Running
+              </span>
+            ) : (
+              "Run Full Pipeline"
+            )}
+          </button>
+        }
+      >
+        <div className="overflow-x-auto">
+          <DataTable data={statusTableData} />
         </div>
+      </Card>
+
+      <Card title="Pipeline Log">
+        <pre
+          ref={logRef}
+          className="max-h-96 overflow-y-auto rounded-xl bg-slate-900 p-4 font-mono text-xs text-slate-300"
+        >
+          {logLines.length > 0 ? logLines.join("\n") : "No log output yet."}
+        </pre>
+      </Card>
+
+      {liveAlertsEnabled && (
+        <Card title="Live Account Alerts">
+          {alertsError ? (
+            <p className="text-sm text-slate-500">Could not load alerts.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <DataTable data={alertsTableData} />
+            </div>
+          )}
+        </Card>
+      )}
+        </>
       )}
     </div>
   );

@@ -1,100 +1,135 @@
 import { useEffect, useState } from "react";
 import { getXaiGlobal } from "../api/client";
-import LoadingSpinner from "../components/LoadingSpinner";
-import { MODELS, PLOT_TYPES, toImageSrc } from "../utils/constants";
+import ErrorCard from "../components/ErrorCard";
+import ImageCard from "../components/ImageCard";
+import PageTitle from "../components/PageTitle";
+import Select from "../components/Select";
+import { MODELS, PLOT_TYPES, apiError, modelLabel } from "../utils/constants";
 
 export default function XaiGlobalPage() {
-  const [model, setModel] = useState("xgboost");
-  const [plotType, setPlotType] = useState("beeswarm");
+  const [model, setModel] = useState("");
+  const [plotType, setPlotType] = useState("");
+  const [error, setError] = useState(null);
   const [selectedImage, setSelectedImage] = useState(null);
-  const [stackedImages, setStackedImages] = useState({});
-  const [loading, setLoading] = useState(false);
+  const [selectedLoading, setSelectedLoading] = useState(false);
+  const [allImages, setAllImages] = useState({
+    beeswarm: null,
+    bar: null,
+    dependence: null,
+  });
+  const [allLoading, setAllLoading] = useState(false);
 
   useEffect(() => {
-    if (!model || !plotType) return;
-    setLoading(true);
+    if (!model || !plotType) {
+      setSelectedImage(null);
+      setSelectedLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setSelectedLoading(true);
+
     getXaiGlobal(model, plotType)
-      .then((data) => setSelectedImage(data.image))
-      .catch(() => setSelectedImage(null))
-      .finally(() => setLoading(false));
+      .then((data) => {
+        if (!cancelled) setSelectedImage(data?.image ?? null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setSelectedImage(null);
+          setError({ message: apiError(err) });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setSelectedLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [model, plotType]);
 
   useEffect(() => {
-    if (!model) return;
+    if (!model) {
+      setAllImages({ beeswarm: null, bar: null, dependence: null });
+      setAllLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setAllLoading(true);
+
     Promise.all(
       PLOT_TYPES.map((pt) =>
         getXaiGlobal(model, pt.value)
-          .then((data) => [pt.value, data.image])
+          .then((data) => [pt.value, data?.image ?? null])
           .catch(() => [pt.value, null]),
       ),
-    ).then((results) => {
-      const map = {};
-      results.forEach(([key, img]) => {
-        map[key] = img;
+    )
+      .then((results) => {
+        if (cancelled) return;
+        const next = { beeswarm: null, bar: null, dependence: null };
+        results.forEach(([key, img]) => {
+          next[key] = img;
+        });
+        setAllImages(next);
+      })
+      .finally(() => {
+        if (!cancelled) setAllLoading(false);
       });
-      setStackedImages(map);
-    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [model]);
 
-  return (
-    <div>
-      <h1 className="mb-4 text-lg font-medium">XAI Global</h1>
+  const plotLabel =
+    PLOT_TYPES.find((p) => p.value === plotType)?.label ?? plotType;
+  const selectedTitle = `${modelLabel(model)} — ${plotLabel}`;
 
-      <div className="mb-6 flex flex-wrap gap-4">
-        <div>
-          <label className="mr-2 text-sm">Model</label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded border border-gray-400 px-2 py-1 text-sm"
-          >
-            {MODELS.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="mr-2 text-sm">Plot Type</label>
-          <select
-            value={plotType}
-            onChange={(e) => setPlotType(e.target.value)}
-            className="rounded border border-gray-400 px-2 py-1 text-sm"
-          >
-            {PLOT_TYPES.map((pt) => (
-              <option key={pt.value} value={pt.value}>
-                {pt.label}
-              </option>
-            ))}
-          </select>
-        </div>
+  return (
+    <div className="space-y-6">
+      <PageTitle>XAI Global</PageTitle>
+      <ErrorCard error={error} />
+
+      <div className="flex flex-wrap gap-4">
+        <Select
+          id="global-model"
+          label="Model"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          options={MODELS}
+          className="min-w-[180px]"
+        />
+        <Select
+          id="global-plot"
+          label="Plot type"
+          value={plotType}
+          onChange={(e) => setPlotType(e.target.value)}
+          options={PLOT_TYPES}
+          className="min-w-[180px]"
+        />
       </div>
 
-      {loading && <LoadingSpinner />}
-
-      {selectedImage && !loading && (
-        <img
-          src={toImageSrc(selectedImage)}
-          alt={`${model} ${plotType}`}
-          className="mb-8 w-full border border-gray-200"
+      {model && plotType && (
+        <ImageCard
+          title={selectedTitle}
+          base64={selectedImage}
+          loading={selectedLoading}
         />
       )}
 
-      <div className="space-y-6">
-        {PLOT_TYPES.map((pt) =>
-          stackedImages[pt.value] ? (
-            <div key={pt.value}>
-              <h2 className="mb-2 text-sm font-medium">{pt.label}</h2>
-              <img
-                src={toImageSrc(stackedImages[pt.value])}
-                alt={pt.label}
-                className="w-full border border-gray-200"
-              />
-            </div>
-          ) : null,
-        )}
-      </div>
+      {model && (
+        <div className="space-y-6">
+          {PLOT_TYPES.map((pt) => (
+            <ImageCard
+              key={pt.value}
+              title={pt.label}
+              base64={allImages[pt.value]}
+              loading={allLoading}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

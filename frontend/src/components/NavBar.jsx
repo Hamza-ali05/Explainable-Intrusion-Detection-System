@@ -1,32 +1,22 @@
-import { Link, useLocation } from "react-router-dom";
+import { NavLink } from "react-router-dom";
+import { NAV_LINKS } from "../utils/nav";
 
-const LINKS = [
-  { to: "/status", label: "Status" },
-  { to: "/evaluate", label: "Evaluate" },
-  { to: "/xai/global", label: "XAI Global" },
-  { to: "/xai/local", label: "XAI Local" },
-  { to: "/xai/quality", label: "XAI Quality" },
-  { to: "/predict", label: "Predict" },
-  { to: "/reports", label: "Reports" },
-];
-
-export default function NavBar() {
-  const { pathname } = useLocation();
-
+export default function Navbar() {
   return (
-    <nav className="border-b border-gray-300 px-4 py-3">
-      <ul className="flex flex-wrap gap-4 text-sm">
-        {LINKS.map(({ to, label }) => (
-          <li key={to}>
-            <Link
-              to={to}
-              className={pathname === to ? "underline" : "hover:underline"}
-            >
-              {label}
-            </Link>
-          </li>
-        ))}
-      </ul>
+    <nav className="fixed top-4 left-1/2 z-50 mx-auto flex -translate-x-1/2 items-center gap-6 rounded-full border border-slate-700 bg-slate-800/90 px-6 py-3 shadow-xl backdrop-blur">
+      {NAV_LINKS.map(({ to, label }) => (
+        <NavLink
+          key={to}
+          to={to}
+          className={({ isActive }) =>
+            isActive
+              ? "text-sm font-semibold text-sky-400"
+              : "text-sm text-slate-400 transition-colors hover:text-slate-100"
+          }
+        >
+          {label}
+        </NavLink>
+      ))}
     </nav>
   );
 }

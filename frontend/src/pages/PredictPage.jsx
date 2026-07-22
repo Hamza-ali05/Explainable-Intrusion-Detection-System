@@ -1,64 +1,185 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
+  Cell,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { predictFile } from "../api/client";
-import LoadingSpinner from "../components/LoadingSpinner";
-import { MODELS } from "../utils/constants";
+import { Loader2 } from "lucide-react";
+import {
+  getPredictSamples,
+  predictFile,
+  predictSingle,
+} from "../api/client";
+import Badge from "../components/Badge";
+import Card from "../components/Card";
+import DataTable from "../components/DataTable";
+import ErrorCard from "../components/ErrorCard";
+import PageSkeleton from "../components/PageSkeleton";
+import PageTitle from "../components/PageTitle";
+import Select from "../components/Select";
+import { MODELS, THREAT_CLASSES, apiError } from "../utils/constants";
 
-const PAGE_SIZE = 20;
+const CLASS_COLOURS = {
+  BENIGN: "#4ade80",
+  DDoS: "#f87171",
+  DoS: "#fb923c",
+  PortScan: "#fbbf24",
+  BruteForce: "#c084fc",
+  WebAttack: "#f472b6",
+  Infiltration: "#38bdf8",
+  Botnet: "#fb7185",
+};
+
+const PAGE_SIZE = 50;
+
+function classColour(label) {
+  return CLASS_COLOURS[label] || "#64748b";
+}
+
+function badgeType(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, "");
+}
+
+function probabilityChartData(probabilities) {
+  if (!probabilities) return [];
+  return Object.entries(probabilities)
+    .map(([label, value]) => ({
+      label,
+      value: Number(value),
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function distributionChartData(labelCounts) {
+  if (!labelCounts) return [];
+  return Object.entries(labelCounts)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
+}
 
 export default function PredictPage() {
+  const fileInputRef = useRef(null);
+
   const [file, setFile] = useState(null);
-  const [model, setModel] = useState("xgboost");
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState(null);
-  const [page, setPage] = useState(0);
+  const [batchModel, setBatchModel] = useState("");
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchResult, setBatchResult] = useState(null);
+  const [batchPage, setBatchPage] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
 
-  const chartData = useMemo(() => {
-    if (!result?.label_counts) return [];
-    return Object.entries(result.label_counts)
-      .filter(([, count]) => count > 0)
-      .map(([label, count]) => ({ label, count }));
-  }, [result]);
+  const [samples, setSamples] = useState({});
+  const [sampleType, setSampleType] = useState("");
+  const [formValues, setFormValues] = useState({});
+  const [singleModel, setSingleModel] = useState("");
+  const [singleLoading, setSingleLoading] = useState(false);
+  const [singleResult, setSingleResult] = useState(null);
+  const [error, setError] = useState(null);
+  const [samplesLoading, setSamplesLoading] = useState(true);
 
-  const displayPredictions = useMemo(
-    () => (result?.predictions ?? []).slice(0, 100),
-    [result],
-  );
+  useEffect(() => {
+    (async () => {
+      try {
+        const data = await getPredictSamples();
+        setSamples(data);
+      } catch (err) {
+        setError({ message: apiError(err) });
+        setSamples({});
+      } finally {
+        setSamplesLoading(false);
+      }
+    })();
+  }, []);
 
-  const pageRows = useMemo(() => {
-    const start = page * PAGE_SIZE;
-    return displayPredictions.slice(start, start + PAGE_SIZE);
-  }, [displayPredictions, page]);
+  useEffect(() => {
+    if (!sampleType || !samples[sampleType]) {
+      setFormValues({});
+      return;
+    }
+    setFormValues({ ...samples[sampleType] });
+    setSingleResult(null);
+  }, [sampleType, samples]);
 
-  const totalPages = result
-    ? Math.ceil(displayPredictions.length / PAGE_SIZE)
-    : 0;
+  const acceptFile = useCallback((nextFile) => {
+    if (!nextFile) return;
+    if (!nextFile.name.toLowerCase().endsWith(".csv")) return;
+    setFile(nextFile);
+    setBatchResult(null);
+    setBatchPage(0);
+  }, []);
 
-  const handlePredict = async () => {
-    if (!file) return;
-    setLoading(true);
-    setPage(0);
+  const handleBatchPredict = async () => {
+    if (!file || !batchModel) return;
+    setBatchLoading(true);
+    setBatchPage(0);
+    setError(null);
     try {
-      const data = await predictFile(file, model);
-      setResult(data);
+      const data = await predictFile(file, batchModel);
+      setBatchResult(data);
     } catch (err) {
-      alert(err.response?.data?.detail ?? err.message);
+      setBatchResult(null);
+      setError({ message: apiError(err) });
     } finally {
-      setLoading(false);
+      setBatchLoading(false);
     }
   };
 
+  const handleSinglePredict = async () => {
+    if (!singleModel || !sampleType) return;
+    setSingleLoading(true);
+    setError(null);
+    try {
+      const data = await predictSingle(singleModel, formValues);
+      setSingleResult(data);
+    } catch (err) {
+      setSingleResult(null);
+      setError({ message: apiError(err) });
+    } finally {
+      setSingleLoading(false);
+    }
+  };
+
+  const featureKeys = useMemo(() => Object.keys(formValues), [formValues]);
+
+  const allRows = useMemo(() => {
+    const rows = batchResult?.predictions ?? [];
+    return rows.map((label, index) => ({
+      "Row Index": index,
+      "Predicted Class": (
+        <Badge type={badgeType(label)}>{label}</Badge>
+      ),
+    }));
+  }, [batchResult]);
+
+  const pageRows = useMemo(() => {
+    const start = batchPage * PAGE_SIZE;
+    return allRows.slice(start, start + PAGE_SIZE);
+  }, [allRows, batchPage]);
+
+  const totalPages = allRows.length
+    ? Math.ceil(allRows.length / PAGE_SIZE)
+    : 0;
+
+  const batchChartData = useMemo(
+    () => distributionChartData(batchResult?.label_counts),
+    [batchResult],
+  );
+
+  const singleChartData = useMemo(
+    () => probabilityChartData(singleResult?.probabilities),
+    [singleResult],
+  );
+
   const handleDownload = () => {
-    if (!result?.predictions) return;
+    if (!batchResult?.predictions) return;
     const header = "row_index,predicted_label\n";
-    const body = result.predictions
+    const body = batchResult.predictions
       .map((label, i) => `${i},${label}`)
       .join("\n");
     const blob = new Blob([header + body], { type: "text/csv" });
@@ -71,117 +192,275 @@ export default function PredictPage() {
   };
 
   return (
-    <div>
-      <h1 className="mb-4 text-lg font-medium">Predict</h1>
+    <div className="space-y-6">
+      <PageTitle>Predict</PageTitle>
+      <ErrorCard error={error} />
 
-      <div className="mb-4 space-y-4">
-        <div>
-          <input
-            type="file"
-            accept=".csv"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            className="text-sm"
-          />
-          {file && <span className="ml-2 text-sm text-gray-600">{file.name}</span>}
-        </div>
-
-        <div>
-          <label className="mr-2 text-sm">Model</label>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="rounded border border-gray-400 px-2 py-1 text-sm"
+      <Card title="Batch Prediction from CSV">
+        <div className="space-y-4">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click();
+            }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              acceptFile(e.dataTransfer.files?.[0] ?? null);
+            }}
+            className={`cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 text-center transition ${
+              dragOver
+                ? "border-sky-400 bg-sky-500/10"
+                : "border-slate-600 bg-slate-900/40 hover:border-slate-500"
+            }`}
           >
-            {MODELS.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <button
-          type="button"
-          onClick={handlePredict}
-          disabled={!file || loading}
-          className="rounded border border-gray-400 px-4 py-1 text-sm hover:bg-gray-50 disabled:opacity-50"
-        >
-          Run Prediction
-        </button>
-      </div>
-
-      {loading && <LoadingSpinner />}
-
-      {result && !loading && (
-        <div className="space-y-6">
-          <div className="flex flex-wrap items-start gap-8">
-            <div>
-              <div className="text-2xl font-semibold">{result.total_rows}</div>
-              <div className="text-xs text-gray-600">Total Rows</div>
-            </div>
-            {chartData.length > 0 && (
-              <div className="h-32 flex-1 min-w-[200px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chartData} layout="vertical">
-                    <XAxis type="number" hide />
-                    <YAxis type="category" dataKey="label" width={80} tick={{ fontSize: 11 }} />
-                    <Tooltip />
-                    <Bar dataKey="count" fill="#64748b" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+            <p className="text-sm text-slate-300">
+              Drag and drop a CSV file here, or click to upload
+            </p>
+            <p className="mt-1 text-xs text-slate-500">Accepts .csv only</p>
+            {file && (
+              <p className="mt-3 text-sm font-medium text-sky-400">{file.name}</p>
             )}
           </div>
 
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-gray-300 text-left">
-                <th className="py-2 pr-4">Row Index</th>
-                <th className="py-2">Predicted Class</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pageRows.map((label, i) => (
-                <tr key={page * PAGE_SIZE + i} className="border-b border-gray-200">
-                  <td className="py-2 pr-4">{page * PAGE_SIZE + i}</td>
-                  <td className="py-2">{label}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={(e) => acceptFile(e.target.files?.[0] ?? null)}
+          />
 
-          {totalPages > 1 && (
-            <div className="flex items-center gap-2 text-sm">
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className="rounded border border-gray-400 px-2 py-0.5 disabled:opacity-50"
-              >
-                Prev
-              </button>
-              <span>
-                Page {page + 1} of {totalPages}
-              </span>
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
-                className="rounded border border-gray-400 px-2 py-0.5 disabled:opacity-50"
-              >
-                Next
-              </button>
-            </div>
-          )}
+          <Select
+            id="batch-model"
+            label="Model"
+            value={batchModel}
+            onChange={(e) => setBatchModel(e.target.value)}
+            options={MODELS}
+            className="min-w-[200px]"
+          />
 
           <button
             type="button"
-            onClick={handleDownload}
-            className="rounded border border-gray-400 px-4 py-1 text-sm hover:bg-gray-50"
+            onClick={handleBatchPredict}
+            disabled={!file || !batchModel || batchLoading}
+            className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Download CSV
+            {batchLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+            Run Prediction
           </button>
         </div>
+      </Card>
+
+      <Card title="Test with Sample Values">
+        <div className="space-y-4">
+          {samplesLoading && <PageSkeleton />}
+
+          {!samplesLoading && (
+          <>
+          <Select
+            id="sample-type"
+            label="Sample Attack Type"
+            value={sampleType}
+            onChange={(e) => setSampleType(e.target.value)}
+            options={THREAT_CLASSES}
+            className="min-w-[200px]"
+          />
+
+          {sampleType && featureKeys.length > 0 && (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {featureKeys.map((key) => {
+                const raw = formValues[key];
+                const isNumber =
+                  typeof raw === "number" ||
+                  (raw !== "" && raw != null && !Number.isNaN(Number(raw)));
+                return (
+                  <div key={key}>
+                    <label
+                      htmlFor={`feature-${key}`}
+                      className="mb-1 block text-xs text-slate-400"
+                    >
+                      {key}
+                    </label>
+                    <input
+                      id={`feature-${key}`}
+                      type={isNumber ? "number" : "text"}
+                      value={raw ?? ""}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        setFormValues((prev) => ({
+                          ...prev,
+                          [key]: isNumber && next !== "" ? Number(next) : next,
+                        }));
+                      }}
+                      className="w-full rounded-lg border border-slate-600 bg-slate-700 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <Select
+            id="single-model"
+            label="Model"
+            value={singleModel}
+            onChange={(e) => setSingleModel(e.target.value)}
+            options={MODELS}
+            className="min-w-[200px]"
+          />
+
+          <button
+            type="button"
+            onClick={handleSinglePredict}
+            disabled={!singleModel || !sampleType || singleLoading}
+            className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {singleLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+            Predict Single Row
+          </button>
+
+          {singleResult && (
+            <Card title="Prediction Result">
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <span className="text-sm text-slate-400">Predicted class</span>
+                <Badge type={badgeType(singleResult.predicted_class)}>
+                  {singleResult.predicted_class}
+                </Badge>
+                <span
+                  className="text-2xl font-bold"
+                  style={{ color: classColour(singleResult.predicted_class) }}
+                >
+                  {singleResult.predicted_class}
+                </span>
+              </div>
+
+              {singleChartData.length > 0 && (
+                <div className="h-56 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={singleChartData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                      <XAxis type="number" domain={[0, 1]} tick={{ fontSize: 11, fill: "#94a3b8" }} />
+                      <YAxis
+                        type="category"
+                        dataKey="label"
+                        width={90}
+                        tick={{ fontSize: 11, fill: "#94a3b8" }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          background: "#1e293b",
+                          border: "1px solid #334155",
+                          borderRadius: 8,
+                          color: "#f1f5f9",
+                        }}
+                      />
+                      <Bar dataKey="value">
+                        {singleChartData.map((entry) => (
+                          <Cell
+                            key={entry.label}
+                            fill={classColour(entry.label)}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </Card>
+          )}
+          </>
+          )}
+        </div>
+      </Card>
+
+      {batchResult && (
+        <Card title="Prediction Results">
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-start gap-8">
+              <div>
+                <div className="text-2xl font-bold text-sky-400">
+                  {batchResult.total_rows}
+                </div>
+                <div className="text-xs text-slate-400">Total rows</div>
+              </div>
+
+              {batchChartData.length > 0 && (
+                <div className="h-40 min-w-[260px] flex-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={batchChartData} layout="vertical" margin={{ left: 8, right: 16 }}>
+                      <XAxis type="number" hide />
+                      <YAxis
+                        type="category"
+                        dataKey="label"
+                        width={90}
+                        tick={{ fontSize: 11, fill: "#94a3b8" }}
+                      />
+                      <Tooltip
+                        contentStyle={{
+                          background: "#1e293b",
+                          border: "1px solid #334155",
+                          borderRadius: 8,
+                          color: "#f1f5f9",
+                        }}
+                      />
+                      <Bar dataKey="count">
+                        {batchChartData.map((entry) => (
+                          <Cell
+                            key={entry.label}
+                            fill={classColour(entry.label)}
+                          />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <DataTable data={pageRows} />
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setBatchPage((p) => Math.max(0, p - 1))}
+                  disabled={batchPage === 0}
+                  className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm text-slate-200 transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Previous
+                </button>
+                <span className="text-sm text-slate-400">
+                  Page {batchPage + 1} of {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setBatchPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={batchPage >= totalPages - 1}
+                  className="rounded-lg bg-slate-700 px-3 py-1.5 text-sm text-slate-200 transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="rounded-lg bg-slate-700 px-4 py-2 text-sm text-slate-100 transition hover:bg-slate-600"
+            >
+              Download CSV
+            </button>
+          </div>
+        </Card>
       )}
     </div>
   );

@@ -30,6 +30,7 @@ Thumbs.db
 Desktop.ini
 .idea/
 .vscode/
+.cursor/
 *.swp
 *.swo
 
@@ -37,11 +38,16 @@ Desktop.ini
 .env
 .env.*
 !.env.example
+frontend/.env
+*-firebase-adminsdk-*.json
+firebase-service-account*.json
+*.pem
 
 # --- Node / frontend (dependencies & build output) ---
 /package-lock.json
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
 # --- Data / outputs (generated; large or reproducible from pipeline) ---
 # Ignore contents but keep folder placeholders via .gitkeep

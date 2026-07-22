@@ -12,6 +12,8 @@ Minimal MSc dissertation project for tabular cyber threat classification and pos
 6. Open `http://localhost:3000`
 7. Results: `reports/model_card.md` and `reports/xai/quality/`
 
+On Windows you can also run `run_app.bat` (starts API + React; runs the pipeline once if training checkpoints are missing).
+
 ## Layout
 
 - `src/core.py`: configuration, paths, logging, checkpointing.
@@ -20,7 +22,8 @@ Minimal MSc dissertation project for tabular cyber threat classification and pos
 - `src/model.py`: train and evaluate Decision Tree, Random Forest, XGBoost.
 - `src/xai.py`: SHAP, LIME, fidelity, stability, comprehensibility metrics.
 - `src/pipeline.py`: CLI orchestration, status table, timing, reproducibility snapshots.
-- `ui/app.py`: Streamlit interface with tabs in one file.
+- `api/main.py`: FastAPI REST backend for the dashboard.
+- `frontend/`: React dashboard (data, images, tables, controls only).
 - `tests/test_all.py`: consolidated test file.
 
 ## Setup
@@ -72,20 +75,21 @@ Run `python -m src.pipeline discover` to record SHA-256 checksums in `reports/pr
 
 ```bash
 python -m src.pipeline all              # run all steps in order
-python -m src.pipeline status             # checkpoint table (same as Status tab)
+python -m src.pipeline status             # checkpoint table (same as Status page)
 python -m src.pipeline reset --step train # delete train + downstream markers (prompts to confirm)
 python -m src.pipeline evaluate           # run a single step
 ```
 
 After a successful `all` run, `reports/timing.json`, `reports/env.json`, and `requirements.lock.txt` are written automatically.
 
-### Streamlit UI
+### React dashboard + FastAPI
 
 ```bash
-streamlit run ui/app.py
+uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
+cd frontend && npm install && npm run dev
 ```
 
-Tabs: **Status** (checkpoint table), **Run** (background pipeline), **Evaluate**, **Explain**, **Predict** (upload CSV or demo `data/manual/example_flows.csv`), **Reports**.
+Open `http://localhost:3000`. Pages: **Status**, **Evaluate**, **Global / Local / Quality**, **Predict**, **Reports**. The UI talks only to `/api/*` REST endpoints.
 
 ### Seed manual demo flows
 
@@ -93,7 +97,7 @@ Tabs: **Status** (checkpoint table), **Run** (background pipeline), **Evaluate**
 python scripts/seed_example_flows.py
 ```
 
-Creates `data/manual/example_flows.csv` (~24 rows, 3 per threat class) sampled from raw CICIDS-2017.
+Creates `data/manual/example_flows.csv` (~24 rows, 3 per threat class) sampled from raw CICIDS-2017. The Predict page **Demo CSV** button uses this file.
 
 ## Taxonomy
 
@@ -105,7 +109,7 @@ Threat classes used across the project:
 
 Rerunning `python -m src.pipeline all` is safe and idempotent — completed steps are skipped via checkpoint markers in `checkpoints/`.
 
-- To force a single step to rerun, delete `checkpoints/<step>.done`.
+- To force a single step to rerun, delete `checkpoints/<step>.done`, or use **Force rerun** on the Status page.
 - To rerun a step and everything that depends on it: `python -m src.pipeline reset --step <name>` (deletes that marker **and** every downstream marker; prompts for confirmation in an interactive terminal).
 
 ## Verify tests
@@ -118,4 +122,4 @@ The suite in `tests/test_all.py` covers checkpoint skip/force/reset, cleaning, s
 
 ## Ethics
 
-See `ETHICS.md` for REC approval, UK Data Protection Act 2018 / BCS references, and dual-use mitigation.
+See `ETHICS.md`.

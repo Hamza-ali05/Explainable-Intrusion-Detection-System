@@ -9,11 +9,11 @@ matplotlib
 seaborn
 joblib
 pyarrow
-streamlit
 tqdm
 pyyaml
 pytest
 fastapi
 uvicorn
 python-multipart
+firebase-admin
 
