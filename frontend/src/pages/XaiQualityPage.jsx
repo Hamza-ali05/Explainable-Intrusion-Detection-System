@@ -58,6 +58,19 @@ function buildTableData(tab, rows) {
     "Threat Class": (
       <Badge type={badgeType(row.threat_class)}>{row.threat_class}</Badge>
     ),
+    "IoC Alignment Score": (
+      <div className="flex items-center gap-2">
+        <div className="w-24 bg-slate-700 rounded-full h-2">
+          <div
+            className="bg-sky-500 h-2 rounded-full"
+            style={{ width: `${((Number(row.ioc_alignment_score) || 0) * 100).toFixed(0)}%` }}
+          />
+        </div>
+        <span className="text-xs text-slate-300">
+          {((Number(row.ioc_alignment_score) || 0) * 100).toFixed(0)}%
+        </span>
+      </div>
+    ),
     "Top 10 Features": formatTop10Features(row.top10_features),
   }));
 }

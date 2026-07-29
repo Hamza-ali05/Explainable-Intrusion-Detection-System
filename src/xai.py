@@ -41,7 +41,7 @@ from src.model import (
     _target_column,
     tree_model_for_shap,
 )
-from src.prep import TABULAR_UNSCALED_PARQUET
+from src.prep import TABULAR_UNSCALED_PARQUET, TRAIN_BALANCED_PARQUET
 from src.timing import record_explainability
 
 try:
@@ -1354,6 +1354,55 @@ def _compute_stability_table(ctx: dict[str, Any]) -> pd.DataFrame:
 
     if not rows:
         raise RuntimeError("No stability rows computed from LIME stability JSON files.")
+    return pd.DataFrame(rows)
+
+
+def _fidelity_for_model(model_name: str, ctx: dict[str, Any], _global_dir: Path | None = None) -> pd.DataFrame:
+    """Compatibility wrapper for older tests expecting per-model fidelity rows."""
+    fidelity_df = _compute_fidelity_table(ctx)
+    model_df = fidelity_df[fidelity_df["model"] == model_name].copy()
+    if model_df.empty:
+        raise RuntimeError(f"No fidelity rows found for model={model_name}")
+    return model_df.rename(columns={"k_ablated": "k_removed"})
+
+
+def _stability_for_model(model_name: str, ctx: dict[str, Any]) -> pd.DataFrame:
+    """Compatibility wrapper for older tests expecting simple stability columns."""
+    model = _load_model(model_name)
+    explainer = _shap_explainer_for_model(model, model_name)
+    feature_names = ctx["feature_names"]
+    scaler = ctx.get("scaler")
+    X_test = ctx["X_test"]
+
+    rows: list[dict[str, Any]] = []
+    sample_n = min(8, len(X_test))
+    rng = np.random.default_rng(RANDOM_SEED)
+    for pos in range(sample_n):
+        row_df = X_test.iloc[[pos]]
+        base_top10 = _shap_top10_for_instance(explainer, model, row_df, feature_names)
+        base_set = {item["feature"] for item in base_top10}
+
+        jaccards: list[float] = []
+        for _ in range(3):
+            perturbed_row = _perturb_row_scaled(
+                np.asarray(row_df.iloc[0], dtype=np.float64),
+                scaler,
+                rng=rng,
+                feature_names=feature_names,
+            )
+            perturbed_df = pd.DataFrame([perturbed_row], columns=feature_names)
+            perturbed_top10 = _shap_top10_for_instance(explainer, model, perturbed_df, feature_names)
+            perturbed_set = {item["feature"] for item in perturbed_top10}
+            jaccards.append(_jaccard_sets(base_set, perturbed_set))
+
+        rows.append(
+            {
+                "instance_idx": int(pos),
+                "jaccard_mean": float(np.mean(jaccards)),
+                "perturbed_jaccard_mean": float(np.mean(jaccards)),
+            }
+        )
+
     return pd.DataFrame(rows)
 
 

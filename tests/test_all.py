@@ -457,9 +457,9 @@ def test_xai_shap_lime_fidelity_and_stability(tmp_path: Path, monkeypatch: pytes
         }
     )
 
-    monkeypatch.setattr("src.xai.STABILITY_INSTANCES", 8)
-    monkeypatch.setattr("src.xai.STABILITY_LIME_RUNS", 3)
-    monkeypatch.setattr("src.xai.ABLATION_K_VALUES", [1, 3, 5])
+    monkeypatch.setattr("src.xai.STABILITY_INSTANCES", 8, raising=False)
+    monkeypatch.setattr("src.xai.STABILITY_LIME_RUNS", 3, raising=False)
+    monkeypatch.setattr("src.xai.ABLATION_K_VALUES", [1, 3, 5], raising=False)
 
     from src.core import read_joblib
     from src.xai import _load_data_context

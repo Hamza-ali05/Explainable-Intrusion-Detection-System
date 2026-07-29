@@ -152,16 +152,6 @@ def main() -> None:
     if pred:
         print(f"       predictions: {pred.get('total_rows')}")
 
-    reports = req("GET", "/api/reports")
-    if isinstance(reports, list):
-        print(f"       report files: {len(reports)}")
-
-    card = req("GET", "/api/reports/file?path=reports/model_card.md")
-    if isinstance(card, dict):
-        print(f"       model_card chars: {len(card.get('content', ''))}")
-
-    req("GET", "/api/reports/file?path=reports/does_not_exist.md", expect=404)
-
     print(f"\nResults: {PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
 

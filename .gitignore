@@ -59,6 +59,11 @@ data/processed/*
 !data/processed/.gitkeep
 data/manual/*
 !data/manual/.gitkeep
+# Local runtime DBs (IDS session history, etc.)
+data/*.db
+*.db-journal
+*.db-wal
+*.db-shm
 artifacts/*
 !artifacts/.gitkeep
 checkpoints/*

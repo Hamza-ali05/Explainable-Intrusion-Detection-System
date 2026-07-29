@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import ipaddress
 import io
 import json
 import os
@@ -9,13 +10,18 @@ import random
 import sys
 import threading
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import joblib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import httpx
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +41,7 @@ from src.core import (  # noqa: E402
 from src.model import MODELS_DIR, predict_from_dataframe  # noqa: E402
 from src.pipeline import STEP_ORDER, cmd_all, run_step  # noqa: E402
 from src.xai import explain_one  # noqa: E402
+from api.db import delete_session, get_sessions, init_db, save_session  # noqa: E402
 
 ModelName = Literal["decision_tree", "random_forest", "xgboost"]
 PlotType = Literal["beeswarm", "bar", "dependence"]
@@ -55,6 +62,349 @@ QUALITY_TABLES = {
 }
 
 PREDICT_ROW_LIMIT = 500
+
+# ---------------------------------------------------------------------------
+# IDS module-level artefact loading
+# ---------------------------------------------------------------------------
+_xgb_model: Any = None
+_preprocess_bundle: dict[str, Any] | None = None
+_feature_columns: list[str] | None = None
+_shap_explainer: Any = None
+_model_feature_columns: list[str] | None = None
+_preprocess_feature_columns: list[str] | None = None
+
+_ARTIFACTS_DIR = ROOT / "artifacts"
+_PROCESSED_DIR = ROOT / "data" / "processed"
+
+try:
+    _xgb_model = joblib.load(_ARTIFACTS_DIR / "models" / "xgboost.joblib")
+    LOGGER.info("IDS: loaded xgboost.joblib")
+    _model_n_features = getattr(_xgb_model, "n_features_in_", None)
+    _inner = getattr(_xgb_model, "estimator", _xgb_model)
+    _fni = getattr(_inner, "feature_names_in_", None)
+    if _fni is not None:
+        _model_feature_columns = [str(f) for f in _fni]
+except Exception:
+    LOGGER.warning("IDS: xgboost.joblib not found — IDS endpoints unavailable")
+
+try:
+    _preprocess_bundle = joblib.load(_ARTIFACTS_DIR / "preprocess" / "preprocess_bundle.joblib")
+    LOGGER.info("IDS: loaded preprocess_bundle.joblib")
+    if isinstance(_preprocess_bundle, dict):
+        scaler = _preprocess_bundle.get("scaler")
+        if scaler is not None:
+            scaler_feature_names = getattr(scaler, "feature_names_in_", None)
+            if scaler_feature_names is not None:
+                _preprocess_feature_columns = [str(f) for f in scaler_feature_names]
+except Exception:
+    LOGGER.warning("IDS: preprocess_bundle.joblib not found")
+
+try:
+    _unscaled_path = _PROCESSED_DIR / "tabular_unscaled.parquet"
+    _raw_cols = pd.read_parquet(_unscaled_path).columns.tolist()
+    _feature_columns = [c for c in _raw_cols if c not in ("label", "threat_class", "threat_label")]
+    LOGGER.info("IDS: %d feature columns loaded from tabular_unscaled.parquet", len(_feature_columns or []))
+except Exception:
+    LOGGER.warning("IDS: tabular_unscaled.parquet not found — falling back to model features")
+    if _model_feature_columns is not None:
+        _feature_columns = list(_model_feature_columns)
+
+if _feature_columns and _model_feature_columns and len(_feature_columns) != len(_model_feature_columns):
+    # Current pipeline artefacts expose a 3-feature shared schema, while the
+    # persisted XGBoost model was trained on a 61-feature CICIDS-style schema.
+    # We keep the parquet-derived list for audit visibility, but IDS inference
+    # must use the model's own feature names to pad/truncate safely.
+    LOGGER.warning(
+        "IDS: feature mismatch detected (parquet=%d, model=%d). Using model feature names for inference.",
+        len(_feature_columns),
+        len(_model_feature_columns),
+    )
+    _feature_columns = list(_model_feature_columns)
+elif not _feature_columns and _model_feature_columns:
+    _feature_columns = list(_model_feature_columns)
+
+try:
+    import shap
+
+    _tree_model = getattr(_xgb_model, "estimator", _xgb_model) if _xgb_model else None
+    if _tree_model is not None:
+        _shap_explainer = shap.TreeExplainer(_tree_model)
+        LOGGER.info("IDS: SHAP TreeExplainer initialised")
+except Exception:
+    LOGGER.warning("IDS: SHAP explainer could not be initialised")
+
+IDS_MAX_ROWS = 500
+
+IDS_THREAT_CLASSES = [
+    "BENIGN", "DDoS", "DoS", "PortScan", "BruteForce", "WebAttack", "Infiltration", "Botnet",
+]
+
+CLASS_NOTES: dict[str, str] = {
+    "DDoS": "High packet counts and short flow durations are consistent with volumetric DDoS patterns.",
+    "DoS": "Elevated byte rates and abnormal flow lengths suggest a denial-of-service attempt.",
+    "PortScan": "Short-lived flows with low byte counts are characteristic of port scanning activity.",
+    "BruteForce": "Repeated short connections with consistent packet sizes suggest credential brute-forcing.",
+    "WebAttack": "Destination port and payload size patterns match known web attack signatures.",
+    "Infiltration": "Unusual outbound byte volume and timing anomalies indicate potential data exfiltration.",
+    "Botnet": "Regular inter-arrival times and idle periods are consistent with botnet command-and-control traffic.",
+    "BENIGN": "No anomalous patterns were detected. Traffic matches normal network behaviour profiles.",
+}
+
+SEVERITY_MAP: dict[str, str] = {
+    "BENIGN": "None",
+    "DDoS": "Critical",
+    "DoS": "Critical",
+    "PortScan": "High",
+    "BruteForce": "High",
+    "WebAttack": "High",
+    "Botnet": "High",
+    "Infiltration": "Critical",
+}
+
+MITIGATIONS: dict[str, list[str]] = {
+    "BENIGN": ["No action required.", "Continue monitoring normally."],
+    "DDoS": [
+        "Block source IP at the perimeter firewall immediately.",
+        "Enable rate-limiting and traffic scrubbing on the affected interface.",
+        "Contact upstream ISP to apply traffic filtering at network edge.",
+        "Activate DDoS mitigation service (e.g., Cloudflare, Akamai) if available.",
+    ],
+    "DoS": [
+        "Block the source IP address.",
+        "Apply rate-limiting rules on the affected service port.",
+        "Check server resource utilisation and restart services if necessary.",
+    ],
+    "PortScan": [
+        "Block the scanning IP address.",
+        "Review open ports and close any that are unnecessary.",
+        "Enable stealth mode on the firewall to drop unsolicited packets.",
+        "Check IDS/IPS logs for follow-up exploitation attempts from the same IP.",
+    ],
+    "BruteForce": [
+        "Temporarily block the source IP.",
+        "Enable account lockout policy after 5 failed login attempts.",
+        "Enforce multi-factor authentication on all externally accessible services.",
+        "Audit affected accounts for unauthorised changes.",
+    ],
+    "WebAttack": [
+        "Block the source IP.",
+        "Enable Web Application Firewall (WAF) rules for the targeted endpoint.",
+        "Patch the affected web application to the latest version.",
+        "Review access logs for any successful exploitation.",
+    ],
+    "Infiltration": [
+        "Isolate the affected host from the network immediately.",
+        "Perform memory and disk forensics on the host.",
+        "Review outbound traffic logs for data exfiltration.",
+        "Reset all credentials associated with the affected host.",
+        "Notify the incident response team.",
+    ],
+    "Botnet": [
+        "Isolate the affected host.",
+        "Run a full malware scan using an updated endpoint protection tool.",
+        "Block known C2 IP addresses and domains at the firewall.",
+        "Rebuild the host from a clean image after forensics are complete.",
+    ],
+}
+
+MALICIOUS_ASNS = {"AS16276", "AS14061", "AS63949", "AS396356", "AS211298"}
+
+
+def _ids_preprocess_input(df: pd.DataFrame) -> np.ndarray:
+    """Align raw DataFrame to model feature columns and return numpy array."""
+    if _feature_columns is None:
+        raise RuntimeError("Feature columns not loaded")
+
+    incoming = df.copy()
+    incoming.columns = [str(c).strip() for c in incoming.columns]
+
+    unknown_columns = [c for c in incoming.columns if c not in _feature_columns]
+    if unknown_columns:
+        LOGGER.warning(
+            "IDS: dropping %d unrecognised columns: %s",
+            len(unknown_columns),
+            ", ".join(unknown_columns[:12]),
+        )
+        incoming = incoming.drop(columns=unknown_columns, errors="ignore")
+
+    aligned = incoming.reindex(columns=_feature_columns, fill_value=0.0)
+    for col in aligned.columns:
+        aligned[col] = pd.to_numeric(aligned[col], errors="coerce").fillna(0.0)
+
+    scaler = None
+    if isinstance(_preprocess_bundle, dict):
+        scaler = _preprocess_bundle.get("scaler")
+
+    if scaler is not None:
+        scaler_feature_names = getattr(scaler, "feature_names_in_", None)
+        if scaler_feature_names is not None:
+            expected = [str(f) for f in scaler_feature_names]
+            aligned_for_scaler = aligned.reindex(columns=expected, fill_value=0.0)
+        elif _preprocess_feature_columns:
+            aligned_for_scaler = aligned.reindex(columns=_preprocess_feature_columns, fill_value=0.0)
+        else:
+            aligned_for_scaler = aligned
+
+        try:
+            transformed = scaler.transform(aligned_for_scaler)
+            transformed = np.asarray(transformed, dtype=np.float64)
+            if transformed.shape[1] == len(_feature_columns):
+                return transformed
+            LOGGER.warning(
+                "IDS: scaler output width %d does not match model feature width %d; using aligned raw values.",
+                transformed.shape[1],
+                len(_feature_columns),
+            )
+        except Exception:
+            LOGGER.exception("IDS: scaler transform failed; using aligned raw values instead")
+
+    expected_n = getattr(_xgb_model, "n_features_in_", None)
+    array = aligned.to_numpy(dtype=np.float64)
+    if expected_n is not None and array.shape[1] != int(expected_n):
+        LOGGER.warning(
+            "IDS: input width %d does not match model.n_features_in_=%d. Adjusting with zero padding/truncation.",
+            array.shape[1],
+            int(expected_n),
+        )
+        if array.shape[1] > int(expected_n):
+            array = array[:, : int(expected_n)]
+        else:
+            pad = np.zeros((array.shape[0], int(expected_n) - array.shape[1]), dtype=np.float64)
+            array = np.hstack([array, pad])
+    return array
+
+
+def _ids_generate_shap(X_processed: np.ndarray, row_idx: int, predicted_class_idx: int) -> list[dict[str, Any]]:
+    """Return top-15 SHAP feature contributions for the predicted class."""
+    if _shap_explainer is None or _feature_columns is None:
+        return []
+    try:
+        shap_values = _shap_explainer.shap_values(X_processed[row_idx : row_idx + 1])
+        row_shap = shap_values[0, :, predicted_class_idx]
+        pairs = list(zip(_feature_columns, row_shap))
+        pairs.sort(key=lambda p: abs(p[1]), reverse=True)
+        return [
+            {
+                "feature": feat,
+                "shap_value": round(float(val), 6),
+                "direction": "positive" if val > 0 else "negative",
+            }
+            for feat, val in pairs[:15]
+        ]
+    except Exception:
+        LOGGER.exception("SHAP explanation failed for row %d", row_idx)
+        return []
+
+
+def _ids_generate_narrative(top_shap: list[dict[str, Any]], predicted_class: str, confidence: float) -> str:
+    """Build a deterministic plain-language explanation."""
+    f1 = top_shap[0] if len(top_shap) > 0 else {"feature": "unknown", "direction": "unknown"}
+    f2 = top_shap[1] if len(top_shap) > 1 else {"feature": "unknown", "direction": "unknown"}
+    note = CLASS_NOTES.get(predicted_class, "")
+    return (
+        f"This flow was classified as {predicted_class} with {confidence:.0%} confidence. "
+        f"The primary contributing features were {f1['feature']} ({f1['direction']} contribution) "
+        f"and {f2['feature']} ({f2['direction']} contribution). {note}"
+    )
+
+
+def _ids_analyze_rows(df: pd.DataFrame) -> dict[str, Any]:
+    """Run IDS analysis on a DataFrame of raw network flows."""
+    if _xgb_model is None or _feature_columns is None:
+        raise HTTPException(status_code=503, detail="Model artefacts not loaded.")
+
+    if len(df) > IDS_MAX_ROWS:
+        LOGGER.warning("IDS: input has %d rows, truncating to %d", len(df), IDS_MAX_ROWS)
+        df = df.head(IDS_MAX_ROWS).copy()
+
+    X = _ids_preprocess_input(df)
+    probas = _xgb_model.predict_proba(X)
+    classes = [str(c) for c in _xgb_model.classes_]
+
+    results: list[dict[str, Any]] = []
+    summary: dict[str, int] = {}
+
+    for i in range(len(X)):
+        proba_row = probas[i]
+        pred_idx = int(np.argmax(proba_row))
+        predicted_class = classes[pred_idx]
+        confidence = float(proba_row[pred_idx])
+        severity = SEVERITY_MAP.get(predicted_class, "Medium")
+        mitigation = MITIGATIONS.get(predicted_class, [])
+
+        shap_top15 = _ids_generate_shap(X, i, pred_idx)
+        narrative = _ids_generate_narrative(shap_top15, predicted_class, confidence)
+
+        prob_dict = {cls: round(float(proba_row[j]), 6) for j, cls in enumerate(classes)}
+        feature_payload = {
+            col: float(pd.to_numeric(df.iloc[i].get(col, 0.0), errors="coerce") if col in df.columns else 0.0)
+            for col in _feature_columns
+        }
+
+        summary[predicted_class] = summary.get(predicted_class, 0) + 1
+
+        results.append({
+            "row_index": i,
+            "predicted_class": predicted_class,
+            "confidence": round(confidence, 6),
+            "severity": severity,
+            "probabilities": prob_dict,
+            "shap_top15": shap_top15,
+            "narrative": narrative,
+            "mitigation": mitigation,
+            "features": feature_payload,
+            "model": "xgboost",
+        })
+
+    return {"total_rows": len(results), "summary": summary, "results": results}
+
+
+class IDSSingleRequest(BaseModel):
+    features: dict[str, Any] = Field(..., description="Feature name to numeric value map")
+    model: str = Field(default="xgboost")
+
+
+class IDSExportRequest(BaseModel):
+    row_index: int
+    predicted_class: str
+    confidence: float
+    severity: str
+    probabilities: dict[str, Any]
+    shap_top15: list[dict[str, Any]]
+    narrative: str
+    mitigation: list[str]
+    features: dict[str, Any]
+    model: str = "xgboost"
+
+
+def _ids_build_session_record(
+    *,
+    result: dict[str, Any],
+    user_email: str | None,
+    model_used: str,
+    input_method: str,
+) -> dict[str, Any]:
+    summary = result.get("summary", {})
+    benign_count = int(summary.get("BENIGN", 0))
+    total_rows = int(result.get("total_rows", len(result.get("results", []))))
+    threat_count = max(0, total_rows - benign_count)
+    threat_only = {k: int(v) for k, v in summary.items() if k != "BENIGN" and int(v) > 0}
+    if threat_only:
+        top_threat, top_threat_count = max(threat_only.items(), key=lambda kv: kv[1])
+    else:
+        top_threat, top_threat_count = "None", 0
+    return {
+        "session_timestamp": datetime.now(timezone.utc).isoformat(),
+        "user_email": user_email or "anonymous",
+        "total_rows": total_rows,
+        "benign_count": benign_count,
+        "threat_count": threat_count,
+        "top_threat": top_threat,
+        "top_threat_count": int(top_threat_count),
+        "model_used": model_used,
+        "input_method": input_method,
+    }
+
 
 _pipeline_lock = threading.Lock()
 _pipeline_running = False
@@ -85,6 +435,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+init_db()
+
 _FIREBASE_VERIFY = False
 _sa_path = os.environ.get("FIREBASE_SERVICE_ACCOUNT_PATH", "").strip()
 if _sa_path and Path(_sa_path).is_file():
@@ -94,28 +446,32 @@ if _sa_path and Path(_sa_path).is_file():
     firebase_admin.initialize_app(credentials.Certificate(_sa_path))
     _FIREBASE_VERIFY = True
 
-MOCK_GOOGLE_ALERTS = {
-    "alerts": [
-        {
-            "severity": "Low",
-            "type": "Suspicious login",
-            "timestamp": "2026-07-22T08:14:00Z",
-            "detail": "Sign-in from new location detected",
-        },
-        {
-            "severity": "Medium",
-            "type": "Password reuse",
-            "timestamp": "2026-07-21T16:45:00Z",
-            "detail": "Reused password detected across services",
-        },
-        {
-            "severity": "High",
-            "type": "Phishing email",
-            "timestamp": "2026-07-20T11:30:00Z",
-            "detail": "Phishing attempt blocked by Gmail filter",
-        },
-    ]
-}
+MOCK_GOOGLE_ALERTS = [
+    {
+        "severity": "Critical",
+        "type": "Suspicious login",
+        "timestamp": "2026-07-28T03:14:22Z",
+        "detail": "New sign-in from unrecognised device (Pakistan, Rawalpindi)",
+    },
+    {
+        "severity": "High",
+        "type": "Multiple failed logins",
+        "timestamp": "2026-07-27T22:51:09Z",
+        "detail": "5 failed login attempts to Gmail in 3 minutes",
+    },
+    {
+        "severity": "Medium",
+        "type": "New app authorised",
+        "timestamp": "2026-07-26T11:30:00Z",
+        "detail": "New OAuth application granted access to Google account",
+    },
+    {
+        "severity": "Low",
+        "type": "Password change",
+        "timestamp": "2026-07-25T09:00:00Z",
+        "detail": "Account password was changed from a new device",
+    },
+]
 
 
 def _load_checkpoint_payload(step: str) -> dict[str, Any] | None:
@@ -137,16 +493,6 @@ def _encode_png(path: Path) -> str | None:
 def _read_csv_records(path: Path) -> list[dict[str, Any]]:
     with path.open(encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
-
-
-def _resolve_reports_path(relative_path: str) -> Path:
-    candidate = (ROOT / relative_path).resolve()
-    reports_root = REPORTS_DIR.resolve()
-    if reports_root not in candidate.parents and candidate != reports_root:
-        raise HTTPException(status_code=400, detail="Path must be under reports/")
-    if not candidate.exists() or not candidate.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {relative_path}")
-    return candidate
 
 
 def _validate_model(model: str) -> str:
@@ -715,51 +1061,15 @@ def api_predict_explain(body: ExplainRequest) -> dict[str, Any]:
     }
 
 
-@app.get("/api/reports")
-def api_reports() -> list[dict[str, str]]:
-    if not REPORTS_DIR.exists():
-        return []
-
-    entries: list[dict[str, str]] = []
-    for path in sorted(REPORTS_DIR.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(ROOT).as_posix()
-        suffix = path.suffix.lower().lstrip(".")
-        if suffix in {"md", "csv", "json", "png"}:
-            entries.append({"path": rel, "type": suffix})
-    return entries
-
-
-@app.get("/api/reports/file")
-def api_reports_file(path: str = Query(..., description="Relative path under reports/")) -> dict[str, str]:
-    normalized = path.replace("\\", "/")
-    if not normalized.startswith("reports/"):
-        normalized = f"reports/{normalized.lstrip('/')}"
-    file_path = _resolve_reports_path(normalized)
-    suffix = file_path.suffix.lower()
-
-    if suffix == ".png":
-        encoded = _encode_png(file_path)
-        if encoded is None:
-            raise HTTPException(status_code=404, detail="Image not found")
-        return {"content": encoded, "type": "image"}
-
-    if suffix in {".md", ".csv", ".json", ".txt"}:
-        return {"content": file_path.read_text(encoding="utf-8", errors="replace"), "type": "text"}
-
-    raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
-
-
 @app.get("/api/google/alerts")
-def google_alerts(authorization: str | None = Header(default=None)) -> dict[str, Any]:
+def google_alerts(authorization: str | None = Header(default=None)) -> list[dict[str, Any]]:
     """Verify Firebase ID token (Bearer) and return mock account alerts for demo."""
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing Authorization Bearer token")
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     token = authorization.split(" ", 1)[1].strip()
     if not token:
-        raise HTTPException(status_code=401, detail="Empty bearer token")
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
     if _FIREBASE_VERIFY:
         try:
@@ -771,6 +1081,283 @@ def google_alerts(authorization: str | None = Header(default=None)) -> dict[str,
 
     return MOCK_GOOGLE_ALERTS
 
+
+# ---------------------------------------------------------------------------
+# IDS endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/ids/features")
+def api_ids_features() -> dict[str, Any]:
+    """Return the list of feature names the model expects."""
+    if _feature_columns is None:
+        raise HTTPException(status_code=503, detail="Model artefacts not loaded.")
+    return {"features": _feature_columns}
+
+
+@app.get("/api/ids/ip-lookup")
+async def api_ids_ip_lookup(ip: str = Query(..., description="Public IPv4 address")) -> dict[str, Any]:
+    try:
+        addr = ipaddress.IPv4Address(ip)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Invalid public IPv4 address.") from exc
+
+    if addr.is_private or addr.is_loopback or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+        raise HTTPException(status_code=422, detail="Invalid public IPv4 address.")
+
+    country = None
+    org = None
+    asn = None
+    is_vpn = None
+    is_datacenter = None
+
+    async with httpx.AsyncClient() as client:
+        try:
+            resp = await client.get(f"https://ipapi.co/{ip}/json/", timeout=10)
+            if resp.is_success:
+                payload = resp.json()
+                country = payload.get("country_name")
+                org = payload.get("org")
+                asn = payload.get("asn")
+        except Exception:
+            LOGGER.warning("IDS IP lookup: ipapi lookup failed for %s", ip)
+
+        try:
+            resp = await client.get(
+                f"https://ip-api.com/json/{ip}?fields=proxy,hosting",
+                timeout=10,
+            )
+            if resp.is_success:
+                payload = resp.json()
+                is_vpn = payload.get("proxy")
+                is_datacenter = payload.get("hosting")
+        except Exception:
+            LOGGER.warning("IDS IP lookup: ip-api lookup failed for %s", ip)
+
+    org_text = str(org or "").lower()
+    is_tor = bool(is_vpn and "tor" in org_text)
+
+    threat_score = 0
+    if is_vpn:
+        threat_score += 40
+    if asn in MALICIOUS_ASNS:
+        threat_score += 50
+    if is_vpn and is_datacenter:
+        threat_score += 30
+    threat_score = min(threat_score, 100)
+
+    if threat_score >= 70:
+        suggested_class = "Infiltration"
+    elif threat_score >= 50:
+        suggested_class = "PortScan"
+    elif threat_score >= 30:
+        suggested_class = "DDoS"
+    elif is_vpn:
+        suggested_class = "BruteForce"
+    elif is_datacenter:
+        suggested_class = "BENIGN"
+    else:
+        suggested_class = "BENIGN"
+
+    return {
+        "ip": ip,
+        "country": country,
+        "org": org,
+        "asn": asn,
+        "is_vpn": is_vpn,
+        "is_tor": is_tor,
+        "is_datacenter": is_datacenter,
+        "threat_score": threat_score,
+        "suggested_class": suggested_class,
+    }
+
+
+@app.post("/api/ids/analyze")
+async def api_ids_analyze(
+    file: UploadFile = File(...),
+    model: str = Form(default="xgboost"),
+    x_user_email: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Analyse a CSV of network flows through the IDS pipeline."""
+    if _xgb_model is None:
+        raise HTTPException(status_code=503, detail="Model artefacts not loaded.")
+
+    content = await file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(content), low_memory=False)
+        df.columns = [str(c).strip() for c in df.columns]
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {exc}") from exc
+
+    result = _ids_analyze_rows(df)
+    save_session(
+        _ids_build_session_record(
+            result=result,
+            user_email=x_user_email,
+            model_used=model,
+            input_method="csv",
+        )
+    )
+    return result
+
+
+@app.post("/api/ids/analyze-single")
+def api_ids_analyze_single(
+    body: IDSSingleRequest,
+    x_user_email: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Analyse a single network flow from a feature dict."""
+    if _xgb_model is None:
+        raise HTTPException(status_code=503, detail="Model artefacts not loaded.")
+
+    df = pd.DataFrame([body.features])
+    result = _ids_analyze_rows(df)
+    save_session(
+        _ids_build_session_record(
+            result=result,
+            user_email=x_user_email,
+            model_used=body.model,
+            input_method="manual",
+        )
+    )
+    if result["results"]:
+        return result["results"][0]
+    raise HTTPException(status_code=500, detail="Analysis produced no results.")
+
+
+@app.post("/api/ids/shap-plot")
+def api_ids_shap_plot(body: IDSSingleRequest) -> dict[str, Any]:
+    if _xgb_model is None or _shap_explainer is None or _feature_columns is None:
+        raise HTTPException(status_code=503, detail="Model artefacts not loaded.")
+
+    raw_df = pd.DataFrame([body.features])
+    X_processed = _ids_preprocess_input(raw_df)
+    raw_aligned = raw_df.reindex(columns=_feature_columns, fill_value=0.0).apply(
+        lambda col: pd.to_numeric(col, errors="coerce").fillna(0.0)
+    )
+    proba = _xgb_model.predict_proba(X_processed)[0]
+    predicted_idx = int(np.argmax(proba))
+
+    try:
+        shap_exp = _shap_explainer(X_processed)
+        exp_single = shap.Explanation(
+            values=shap_exp.values[0, :, predicted_idx],
+            base_values=shap_exp.base_values[0, predicted_idx],
+            data=raw_aligned.iloc[0].to_numpy(),
+            feature_names=_feature_columns,
+        )
+        shap.plots.waterfall(exp_single, max_display=15, show=False)
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+        plt.close()
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return {"image": encoded}
+    except Exception as exc:
+        plt.close()
+        raise HTTPException(status_code=400, detail=f"SHAP plot generation failed: {exc}") from exc
+
+
+@app.post("/api/ids/export-pdf")
+def api_ids_export_pdf(body: IDSExportRequest) -> StreamingResponse:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="PDF export requires reportlab. Run pip install reportlab.",
+        ) from exc
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    story.append(Paragraph("Explainable AI Intrusion Detection System — Threat Report", styles["Title"]))
+    story.append(
+        Paragraph(
+            "Canterbury Christ Church University — MSc Cybersecurity | Kamran (100159510)",
+            styles["Normal"],
+        )
+    )
+    story.append(Spacer(1, 12))
+    story.append(Paragraph(f"Detection timestamp: {datetime.now(timezone.utc).isoformat()}", styles["Normal"]))
+    story.append(Spacer(1, 12))
+
+    summary_table = Table(
+        [
+            ["Predicted Class", "Confidence", "Severity", "Model Used"],
+            [body.predicted_class, f"{body.confidence:.1%}", body.severity, body.model],
+        ]
+    )
+    summary_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+            ]
+        )
+    )
+    story.append(summary_table)
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph(body.narrative, styles["BodyText"]))
+    story.append(Spacer(1, 12))
+
+    shap_rows = [["Feature", "SHAP Value", "Direction"]]
+    for row in body.shap_top15:
+        shap_rows.append(
+            [
+                str(row.get("feature", "")),
+                str(row.get("shap_value", "")),
+                str(row.get("direction", "")),
+            ]
+        )
+    shap_table = Table(shap_rows)
+    shap_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ]
+        )
+    )
+    story.append(shap_table)
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("Mitigation steps", styles["Heading3"]))
+    for idx, step in enumerate(body.mitigation, start=1):
+        story.append(Paragraph(f"{idx}. {step}", styles["BodyText"]))
+    story.append(Spacer(1, 18))
+    story.append(
+        Paragraph(
+            "Generated by XAI-IDS Research System. For defensive research purposes only.",
+            styles["Italic"],
+        )
+    )
+
+    doc.build(story)
+    buf.seek(0)
+    filename = f"ids_report_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.pdf"
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+    return StreamingResponse(buf, media_type="application/pdf", headers=headers)
+
+
+@app.get("/api/ids/history")
+def api_ids_history(limit: int = Query(default=50, ge=1, le=500)) -> dict[str, Any]:
+    return {"sessions": get_sessions(limit)}
+
+
+@app.delete("/api/ids/history/{session_id}")
+def api_delete_ids_history(session_id: int) -> dict[str, bool]:
+    return {"deleted": delete_session(session_id)}
+
+
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 def api_root() -> dict[str, str]:

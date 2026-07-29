@@ -4,13 +4,15 @@ Minimal MSc dissertation project for tabular cyber threat classification and pos
 
 ## Quick Start
 
-1. Place CICIDS-2017 day CSVs in `data/raw/CICIDS2017/`.
+1. Place CICIDS-2017 CSVs in `data/raw/CICIDS2017/`
 2. `pip install -r requirements.txt`
-3. `python -m src.pipeline all`
+3. `python -m src.pipeline all`          # takes ~30 min on first run
 4. `uvicorn api.main:app --reload --port 8000`
 5. `cd frontend && npm install && npm run dev`
-6. Open `http://localhost:3000`
-7. Results: `reports/model_card.md` and `reports/xai/quality/`
+6. Open `http://localhost:5173`
+7. Sign in with your Google account.
+8. Go to the IDS page to analyse network traffic.
+   Pipeline research outputs: `reports/model_card.md` and `reports/xai/quality/`
 
 On Windows you can also run `run_app.bat` (starts API + React; runs the pipeline once if training checkpoints are missing).
 
@@ -89,7 +91,7 @@ uvicorn api.main:app --reload --host 127.0.0.1 --port 8000
 cd frontend && npm install && npm run dev
 ```
 
-Open `http://localhost:3000`. Pages: **Status**, **Evaluate**, **Global / Local / Quality**, **Predict**, **Reports**. The UI talks only to `/api/*` REST endpoints.
+Open `http://localhost:3000`. Pages: **IDS**, **Status**, **Evaluate**, **Global / Local / Quality**, **Predict**. The UI talks only to `/api/*` REST endpoints.
 
 ### Seed manual demo flows
 

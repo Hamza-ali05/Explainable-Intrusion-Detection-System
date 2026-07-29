@@ -1,4 +1,5 @@
 export const NAV_LINKS = [
+  { to: "/ids", label: "IDS" },
   { to: "/status", label: "Status" },
   { to: "/evaluate", label: "Evaluate" },
   { to: "/xai/global", label: "XAI Global" },
@@ -8,5 +9,5 @@ export const NAV_LINKS = [
 ];
 
 export function isNavActive(pathname, to) {
-  return pathname === to || (to === "/status" && pathname === "/");
+  return pathname === to || (to === "/ids" && pathname === "/");
 }

@@ -15,6 +15,7 @@ const TYPE_STYLES = {
   high: "bg-amber-900 text-amber-400",
   medium: "bg-sky-900 text-sky-400",
   low: "bg-slate-700 text-slate-400",
+  none: "bg-green-900 text-green-400",
 };
 
 const TYPE_LABELS = {
@@ -34,6 +35,7 @@ const TYPE_LABELS = {
   high: "High",
   medium: "Medium",
   low: "Low",
+  none: "None",
 };
 
 export default function Badge({ type, children }) {
